@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="description" content="Cloudirve 私人文件管理器" />
+  <title>Cloudirve Drive</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <main id="app" class="app-shell"></main>
+  <div id="toast-region" class="toast-region" aria-live="polite"></div>
+  <dialog id="confirm-dialog" class="confirm-dialog">
+    <form method="dialog">
+      <p class="eyebrow">请确认操作</p>
+      <h2 id="confirm-title">确认删除？</h2>
+      <p id="confirm-copy" class="muted">项目将移入回收站。</p>
+      <div class="dialog-actions"><button value="cancel" class="button button-ghost">取消</button><button value="confirm" id="confirm-action" class="button button-danger">确认</button></div>
+    </form>
+  </dialog>
+  <script type="module" src="/app.js"></script>
+</body>
+</html>

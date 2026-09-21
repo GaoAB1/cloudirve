@@ -1,0 +1,14 @@
+{
+  "name": "cloudirve-drive-mvp",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Cloudirve personal drive MVP",
+  "type": "module",
+  "scripts": {
+    "start": "node src/server.js",
+    "test": "node --test && node test/ui.mjs",
+    "test:api": "node --test",
+    "test:ui": "node test/ui.mjs",
+    "check": "node --check src/server.js && node --check src/store.js && node --check public/app.js && node --check test/api.test.js && node --check test/ui.mjs"
+  }
+}
