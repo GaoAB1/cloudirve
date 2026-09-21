@@ -1,0 +1,10 @@
+node_modules
+data
+test
+docs
+design-system
+.workbuddy
+.git
+*.png
+*.md
+.gitignore

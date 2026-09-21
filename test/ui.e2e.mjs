@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import net from 'node:net';
 import { spawn } from 'node:child_process';
+import { createServer } from '../src/server.js';
 
 const CHROME = [
   'C:/Program Files/Google/Chrome/Application/chrome.exe',
@@ -13,9 +14,15 @@ const CHROME = [
 
 if (!CHROME) { console.error('FAIL: no Chrome/Edge found'); process.exit(1); }
 
+const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'cloudirve-ui-'));
+const server = createServer({ dataRoot });
+await server.store.init();
+await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+const base = `http://127.0.0.1:${server.address().port}`;
+
 const cdpPort = await new Promise((resolve) => {
-  const server = net.createServer();
-  server.listen(0, '127.0.0.1', () => { const port = server.address().port; server.close(() => resolve(port)); });
+  const s = net.createServer();
+  s.listen(0, '127.0.0.1', () => { const port = s.address().port; s.close(() => resolve(port)); });
 });
 const profileDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cloudirve-cdp-'));
 
@@ -61,6 +68,7 @@ async function viewport(w, h, mobile = false) {
 
 const checks = [];
 function check(name, ok) { checks.push({ name, ok }); console.log(`${ok ? 'PASS' : 'FAIL'}: ${name}`); }
+const rowVisible = (name) => `[...document.querySelectorAll('.file-name button')].some((b) => b.textContent === '${name}')`;
 
 const main = async () => {
   let list = null;
@@ -81,30 +89,76 @@ const main = async () => {
   await send('Runtime.enable');
 
   await viewport(1440, 900);
-  await send('Page.navigate', { url: 'http://127.0.0.1:4173/' });
+  await send('Page.navigate', { url: `${base}/` });
   await waitFor("document.querySelector('#login-form')", 'login form');
   check('登录页渲染', true);
-  await shot('ui-desktop-login');
 
   await evalInPage("document.querySelector('#username').value='demo'; document.querySelector('#password').value='cloudirve'; document.querySelector('#login-form button[type=submit]').click()");
   await waitFor("document.querySelector('.workspace')", 'workspace');
   check('登录后进入工作区', true);
-  await waitFor("document.querySelector('#file-area')", 'file area');
-  await shot('ui-desktop-drive');
-  check('桌面端空状态可见', await evalInPage("!!document.querySelector('.empty-state')"));
-  check('侧栏导航项齐全', await evalInPage("document.querySelectorAll('.nav-item').length === 2"));
-  check('文件行操作按钮（空目录除外）', await evalInPage("document.querySelectorAll('.nav-item').length >= 2"));
 
+  // 对话弹窗：新建文件夹
+  await evalInPage("document.querySelector('[data-action=new-folder]').click()");
+  await waitFor("document.querySelector('#input-dialog').open", 'input dialog open');
+  check('新建文件夹弹窗可用', true);
+  await evalInPage("document.querySelector('#input-value').value='测试文件夹'; document.querySelector('#input-confirm').click()");
+  await waitFor(rowVisible('测试文件夹'), 'folder row');
+  check('桌面表格渲染新文件夹', true);
+  check('新建文件夹弹窗已关闭', await evalInPage("!document.querySelector('#input-dialog').open"));
+
+  // 对话弹窗：重命名
+  await evalInPage("document.querySelector('[data-action=rename]').click()");
+  await waitFor("document.querySelector('#input-dialog').open", 'rename dialog open');
+  check('重命名弹窗预填旧名称', await evalInPage("document.querySelector('#input-value').value === '测试文件夹'"));
+  await evalInPage("document.querySelector('#input-value').value='测试目录'; document.querySelector('#input-confirm').click()");
+  await waitFor(rowVisible('测试目录'), 'renamed row');
+  check('重命名生效', true);
+
+  // 确认弹窗：取消
+  await evalInPage("document.querySelector('[data-action=delete]').click()");
+  await waitFor("document.querySelector('#confirm-dialog').open", 'confirm open');
+  await evalInPage("document.querySelector('#confirm-dialog button[value=cancel]').click()");
+  await waitFor("!document.querySelector('#confirm-dialog').open", 'confirm closed');
+  check('删除确认可取消', await evalInPage(rowVisible('测试目录')));
+
+  // 确认弹窗：确认删除
+  await evalInPage("document.querySelector('[data-action=delete]').click()");
+  await waitFor("document.querySelector('#confirm-dialog').open", 'confirm open again');
+  await evalInPage("document.querySelector('#confirm-action').click()");
+  await waitFor("document.querySelector('.empty-state')", 'empty after delete');
+  check('确认后移入回收站', true);
+  await shot('ui-desktop-list');
+
+  // 回收站：恢复
   await evalInPage("document.querySelector('[data-action=trash]').click()");
-  await waitFor("document.querySelector('.breadcrumb')", 'trash view');
-  check('回收站页面可达', await evalInPage("document.body.textContent.includes('回收站')"));
-  await shot('ui-desktop-trash');
+  await waitFor(rowVisible('测试目录'), 'trash row');
+  check('回收站显示已删项目', true);
+  await evalInPage("document.querySelector('[data-action=restore]').click()");
+  await waitFor("document.querySelector('.empty-state')", 'trash empty after restore');
+  await evalInPage("document.querySelector('[data-action=drive]').click()");
+  await waitFor(rowVisible('测试目录'), 'restored row');
+  check('恢复后回到我的文件', true);
 
+  // 移动端卡片网格（此时目录中存在文件）
   await viewport(375, 720, true);
-  await send('Page.navigate', { url: 'http://127.0.0.1:4173/' });
-  await waitFor("document.querySelector('.workspace')", 'mobile workspace');
-  await shot('ui-mobile-drive');
+  await waitFor("getComputedStyle(document.querySelector('.file-grid')).display === 'grid'", 'mobile grid');
+  check('移动端切换卡片网格', true);
+  check('桌面表格在移动端隐藏', await evalInPage("getComputedStyle(document.querySelector('.file-table')).display === 'none'"));
   check('移动端无横向滚动', await evalInPage("document.documentElement.scrollWidth <= window.innerWidth + 1"));
+  await shot('ui-mobile-cards');
+  await viewport(1440, 900);
+
+  // 回收站：永久删除
+  await evalInPage("document.querySelector('[data-action=delete]').click()");
+  await waitFor("document.querySelector('#confirm-dialog').open", 'confirm for permanent');
+  await evalInPage("document.querySelector('#confirm-action').click()");
+  await evalInPage("document.querySelector('[data-action=trash]').click()");
+  await waitFor(rowVisible('测试目录'), 'trash row again');
+  await evalInPage("document.querySelector('[data-action=permanent-delete]').click()");
+  await waitFor("document.querySelector('#confirm-dialog').open", 'permanent confirm');
+  await evalInPage("document.querySelector('#confirm-action').click()");
+  await waitFor("document.querySelector('.empty-state')", 'trash empty after permanent');
+  check('永久删除生效', true);
 
   check('无控制台错误', consoleErrors.length === 0);
   check('无未捕获页面异常', pageErrors.length === 0);
@@ -119,6 +173,8 @@ main()
     await new Promise((r) => setTimeout(r, 900));
     if (chrome.exitCode === null) { try { process.kill(-chrome.pid); } catch { try { chrome.kill(); } catch {} } }
     fs.rmSync(profileDir, { recursive: true, force: true });
+    fs.rmSync(dataRoot, { recursive: true, force: true });
+    server.close();
     process.exit(failed.length ? 1 : 0);
   })
   .catch(async (error) => {
@@ -127,5 +183,7 @@ main()
     await new Promise((r) => setTimeout(r, 900));
     if (chrome.exitCode === null) { try { process.kill(-chrome.pid); } catch { try { chrome.kill(); } catch {} } }
     fs.rmSync(profileDir, { recursive: true, force: true });
+    fs.rmSync(dataRoot, { recursive: true, force: true });
+    server.close();
     process.exit(1);
   });

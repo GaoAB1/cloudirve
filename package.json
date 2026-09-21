@@ -6,9 +6,9 @@
   "type": "module",
   "scripts": {
     "start": "node src/server.js",
-    "test": "node --test && node test/ui.mjs",
-    "test:api": "node --test",
-    "test:ui": "node test/ui.mjs",
+    "test": "node --test test/api.test.js && node test/ui.e2e.mjs",
+    "test:api": "node --test test/api.test.js",
+    "test:ui": "node test/ui.e2e.mjs",
     "check": "node --check src/server.js && node --check src/store.js && node --check public/app.js && node --check test/api.test.js && node --check test/ui.mjs"
   }
 }

@@ -1,0 +1,14 @@
+services:
+  cloudirve:
+    build: .
+    image: cloudirve-drive:latest
+    container_name: cloudirve-drive
+    ports:
+      - "4173:4173"
+    environment:
+      HOST: 0.0.0.0
+      PORT: 4173
+    volumes:
+      # 元数据与文件持久化目录；NAS 部署建议保持 bind mount 便于直接备份
+      - ./data:/app/data
+    restart: unless-stopped

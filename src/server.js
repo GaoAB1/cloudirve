@@ -114,5 +114,6 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const server = createServer();
   await server.store.init();
   const port = Number(process.env.PORT || 4173);
-  server.listen(port, '127.0.0.1', () => console.log(`Cloudirve running at http://127.0.0.1:${port}`));
+  const host = process.env.HOST || '127.0.0.1';
+  server.listen(port, host, () => console.log(`Cloudirve running at http://${host === '0.0.0.0' ? '127.0.0.1' : host}:${port}`));
 }

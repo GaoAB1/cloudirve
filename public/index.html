@@ -21,6 +21,15 @@
       <div class="dialog-actions"><button value="cancel" class="button button-ghost">取消</button><button value="confirm" id="confirm-action" class="button button-danger">确认</button></div>
     </form>
   </dialog>
+  <dialog id="input-dialog" class="confirm-dialog input-dialog">
+    <form method="dialog">
+      <p class="eyebrow">Cloudirve</p>
+      <h2 id="input-title">新建文件夹</h2>
+      <div class="field"><label id="input-label" for="input-value">名称</label><input id="input-value" class="input" maxlength="180" autocomplete="off" /></div>
+      <p class="error-text" id="input-error" role="alert"></p>
+      <div class="dialog-actions"><button value="cancel" class="button button-ghost" type="submit">取消</button><button value="confirm" id="input-confirm" class="button button-primary" type="submit">确定</button></div>
+    </form>
+  </dialog>
   <script type="module" src="/app.js"></script>
 </body>
 </html>
