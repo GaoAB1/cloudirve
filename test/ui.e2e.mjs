@@ -5,14 +5,18 @@ import net from 'node:net';
 import { spawn } from 'node:child_process';
 import { createServer } from '../src/server.js';
 
-const CHROME = [
+const CHROME = process.env.CHROME_PATH || [
   'C:/Program Files/Google/Chrome/Application/chrome.exe',
   'C:/Program Files (x86)/Google/Chrome/Application/chrome.exe',
   'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe',
   'C:/Program Files/Microsoft/Edge/Application/msedge.exe',
+  '/usr/bin/google-chrome',
+  '/usr/bin/google-chrome-stable',
+  '/usr/bin/chromium-browser',
+  '/usr/bin/chromium',
 ].find((p) => fs.existsSync(p));
 
-if (!CHROME) { console.error('FAIL: no Chrome/Edge found'); process.exit(1); }
+if (!CHROME) { console.error('FAIL: no Chrome/Edge found (set CHROME_PATH to override)'); process.exit(1); }
 
 const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'cloudirve-ui-'));
 const server = createServer({ dataRoot });
@@ -26,9 +30,13 @@ const cdpPort = await new Promise((resolve) => {
 });
 const profileDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cloudirve-cdp-'));
 
+// CI 容器（root 用户）必须 --no-sandbox，本地平台保持默认
+const platformArgs = process.platform === 'linux' ? ['--no-sandbox', '--disable-setuid-sandbox'] : [];
+
 const chrome = spawn(CHROME, [
   '--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check',
   '--disable-extensions', `--remote-debugging-port=${cdpPort}`, `--user-data-dir=${profileDir}`, 'about:blank',
+  ...platformArgs,
 ], { stdio: ['ignore', 'ignore', 'pipe'] });
 
 let idCounter = 0;
