@@ -79,12 +79,20 @@ function check(name, ok) { checks.push({ name, ok }); console.log(`${ok ? 'PASS'
 const rowVisible = (name) => `[...document.querySelectorAll('.file-name button')].some((b) => b.textContent === '${name}')`;
 
 const main = async () => {
-  let list = null;
-  for (let i = 0; i < 20; i++) {
-    try { list = await (await fetch(`http://127.0.0.1:${cdpPort}/json/list`)).json(); if (list?.length) break; } catch {}
-    await new Promise((r) => setTimeout(r, 300));
+  const chromeStderr = [];
+  chrome.stderr.on('data', (chunk) => chromeStderr.push(String(chunk)));
+  chrome.on('exit', (code) => { if (code !== null && code !== 0) console.log(`chrome exited early: code=${code}\n${chromeStderr.join('').slice(-2000)}`); });
+  let page = null;
+  // CI 上 Chrome 冷启动较慢，最多等 30 秒
+  for (let i = 0; i < 60; i++) {
+    try {
+      const list = await (await fetch(`http://127.0.0.1:${cdpPort}/json/list`)).json();
+      page = (list || []).find((t) => t.type === 'page');
+      if (page) break;
+    } catch {}
+    await new Promise((r) => setTimeout(r, 500));
   }
-  const page = list.find((t) => t.type === 'page');
+  if (!page) throw new Error(`CDP /json/list 未就绪。chrome stderr:\n${chromeStderr.join('').slice(-2000)}`);
   ws = new WebSocket(page.webSocketDebuggerUrl);
   await new Promise((resolve, reject) => { ws.onopen = resolve; ws.onerror = reject; });
   ws.onmessage = (event) => {
