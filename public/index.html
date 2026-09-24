@@ -22,6 +22,13 @@
       <div class="dialog-actions"><button value="cancel" class="button button-ghost">取消</button><button value="confirm" id="confirm-action" class="button button-danger">确认</button></div>
     </form>
   </dialog>
+  <dialog id="preview-dialog" class="preview-dialog">
+    <div class="preview-head">
+      <h2 id="preview-title">预览</h2>
+      <div class="preview-actions"><a id="preview-download" class="button button-ghost" download>下载原文件</a><button id="preview-close" class="icon-button" aria-label="关闭预览" title="关闭">✕</button></div>
+    </div>
+    <div id="preview-body" class="preview-body"></div>
+  </dialog>
   <dialog id="input-dialog" class="confirm-dialog input-dialog">
     <form method="dialog">
       <p class="eyebrow">Cloudirve</p>

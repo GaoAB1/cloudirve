@@ -30,6 +30,7 @@ export class Store {
     this.sessions = new Map();
     this.data = { users: [], files: [] };
     this.quotaBytes = Number(process.env.STORAGE_QUOTA_BYTES || 1024 * 1024 * 1024);
+    this.trashRetentionDays = Number(process.env.TRASH_RETENTION_DAYS || 30);
   }
 
   async init() {
@@ -54,6 +55,27 @@ export class Store {
       }
     }
     if (migrated) await this.persist();
+    await this.purgeExpiredTrash();
+  }
+
+  async purgeExpiredTrash() {
+    const cutoff = Date.now() - this.trashRetentionDays * 24 * 60 * 60 * 1000;
+    const expired = this.data.files.filter((file) => file.deletedAt && new Date(file.deletedAt).getTime() <= cutoff);
+    if (!expired.length) return 0;
+    const ids = new Set(expired.map((file) => file.id));
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (const child of this.data.files) {
+        if (child.parentId && ids.has(child.parentId) && !ids.has(child.id)) { ids.add(child.id); changed = true; }
+      }
+    }
+    for (const item of this.data.files) {
+      if (ids.has(item.id) && !item.isDirectory) await fs.rm(this.pathFor(item), { force: true });
+    }
+    this.data.files = this.data.files.filter((file) => !ids.has(file.id));
+    await this.persist();
+    return ids.size;
   }
 
   async persist() {

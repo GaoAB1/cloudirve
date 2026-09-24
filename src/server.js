@@ -82,14 +82,32 @@ async function handleApi(req, res, store) {
   if (downloadMatch && req.method === 'GET') {
     const file = store.findFile(user.id, downloadMatch[1]);
     if (!file || file.isDirectory) throw new Error('FILE_NOT_FOUND');
-    res.writeHead(200, { 'Content-Type': file.mimeType || 'application/octet-stream', 'Content-Length': file.size, 'Content-Disposition': `attachment; filename*=UTF-8''${encodeURIComponent(file.name)}` });
+    const inline = url.searchParams.get('inline') === '1';
+    const headers = { 'Content-Type': file.mimeType || 'application/octet-stream', 'X-Content-Type-Options': 'nosniff' };
+    if (inline) {
+      // sandbox CSP 禁止内联文档执行脚本（防 SVG XSS），预览一律走前端模态
+      headers['Content-Disposition'] = `inline; filename*=UTF-8''${encodeURIComponent(file.name)}`;
+      headers['Content-Security-Policy'] = 'sandbox';
+      if (isTextFile(file)) {
+        const buffer = await fs.readFile(store.pathFor(file));
+        const content = buffer.subarray(0, 200 * 1024);
+        headers['Content-Length'] = content.length;
+        headers['X-Truncated'] = buffer.length > content.length ? '1' : '0';
+        res.writeHead(200, headers);
+        return res.end(content);
+      }
+    } else {
+      headers['Content-Disposition'] = `attachment; filename*=UTF-8''${encodeURIComponent(file.name)}`;
+    }
+    headers['Content-Length'] = file.size;
+    res.writeHead(200, headers);
     return createReadStream(store.pathFor(file)).pipe(res);
   }
   if (fileMatch && req.method === 'DELETE') {
     await store.softDelete(user.id, fileMatch[1]);
     return sendJson(res, 200, { ok: true });
   }
-  if (req.method === 'GET' && url.pathname === '/api/trash') return sendJson(res, 200, { files: store.data.files.filter((file) => file.userId === user.id && file.deletedAt).sort((a, b) => b.deletedAt.localeCompare(a.deletedAt)) });
+  if (req.method === 'GET' && url.pathname === '/api/trash') return sendJson(res, 200, { files: store.data.files.filter((file) => file.userId === user.id && file.deletedAt).sort((a, b) => b.deletedAt.localeCompare(a.deletedAt)), retentionDays: store.trashRetentionDays });
   const restoreMatch = url.pathname.match(/^\/api\/trash\/([^/]+)\/restore$/);
   if (restoreMatch && req.method === 'POST') return sendJson(res, 200, { file: await store.restore(user.id, restoreMatch[1]) });
   const permanentMatch = url.pathname.match(/^\/api\/trash\/([^/]+)\/permanent$/);
@@ -110,6 +128,13 @@ async function serveStatic(req, res) {
 }
 
 function parseCookies(value = '') { return Object.fromEntries(value.split(';').map((part) => part.trim().split('=').map(decodeURIComponent)).filter(([key]) => key)); }
+const textExtensions = new Set(['txt', 'md', 'json', 'js', 'mjs', 'css', 'csv', 'log', 'xml', 'yml', 'yaml', 'html', 'htm', 'svg', 'sh', 'py', 'ini', 'conf']);
+function isTextFile(file) {
+  const mime = (file.mimeType || '').toLowerCase();
+  if (mime.startsWith('text/') || mime.includes('json') || mime.includes('javascript') || mime.includes('xml')) return true;
+  const ext = (file.name.split('.').pop() || '').toLowerCase();
+  return textExtensions.has(ext);
+}
 function sendJson(res, status, body) { res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' }); res.end(JSON.stringify(body)); }
 async function readJson(req) { try { return JSON.parse(await readBody(req, 1024 * 1024)); } catch { throw new Error('INVALID_JSON'); } }
 function readBody(req, limit) { return new Promise((resolve, reject) => { let size = 0; const chunks = []; req.on('data', (chunk) => { size += chunk.length; if (size > limit) { reject(new Error('FILE_TOO_LARGE')); req.destroy(); return; } chunks.push(chunk); }); req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8'))); req.on('error', reject); }); }
@@ -126,4 +151,6 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const port = Number(process.env.PORT || 4173);
   const host = process.env.HOST || '127.0.0.1';
   server.listen(port, host, () => console.log(`Cloudirve running at http://${host === '0.0.0.0' ? '127.0.0.1' : host}:${port}`));
+  const dailyPurge = setInterval(() => { server.store.purgeExpiredTrash().catch((error) => console.error('trash purge failed:', error.message)); }, 24 * 60 * 60 * 1000);
+  dailyPurge.unref();
 }

@@ -158,6 +158,8 @@ const main = async () => {
   await evalInPage("document.querySelector('[data-action=trash]').click()");
   await waitFor(rowVisible('测试目录'), 'trash row');
   check('回收站显示已删项目', true);
+  await waitFor("document.body.textContent.includes('剩余')", 'retention label');
+  check('回收站显示保留期限', true);
   await evalInPage("document.querySelector('[data-action=restore]').click()");
   await waitFor("document.querySelector('.empty-state')", 'trash empty after restore');
   await evalInPage("document.querySelector('[data-action=drive]').click()");
@@ -183,6 +185,14 @@ const main = async () => {
   check('上传后列表刷新', true);
   await waitFor("document.querySelector('#storage-text').textContent.includes('1 个文件')", 'storage update');
   check('上传后存储用量更新', true);
+
+  // 文本预览：模态弹窗显示文件内容
+  await evalInPage("document.querySelector('[data-action=preview]').click()");
+  await waitFor("document.querySelector('#preview-dialog').open && (document.querySelector('.preview-text') || { textContent: '' }).textContent.includes('hello upload panel')", 'preview text');
+  check('文本预览内容正确', true);
+  await evalInPage("document.querySelector('#preview-close').click()");
+  await waitFor("!document.querySelector('#preview-dialog').open", 'preview closed');
+  check('预览弹窗可关闭', true);
 
   // 移动端卡片网格（此时目录中存在文件）
   await viewport(375, 720, true);

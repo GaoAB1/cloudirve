@@ -162,6 +162,48 @@ test('搜索按文件名模糊匹配且只返回自己的文件', async (t) => {
   assert.equal(result.response.status, 401);
 });
 
+test('inline 预览支持文本截断并带安全响应头', async (t) => {
+  const context = await boot();
+  t.after(() => context.server.close());
+  const cookie = await login(context.base);
+  const form = new FormData(); form.append('parentId', ''); form.append('file', new Blob(['hello preview'], { type: 'text/plain' }), 'note.txt');
+  let result = await request(context.base, '/api/files/upload', { method: 'POST', body: form }, cookie);
+  const fileId = result.result.file.id;
+  const response = await fetch(`${context.base}/api/files/${fileId}/download?inline=1`, { headers: { Cookie: cookie } });
+  assert.equal(response.status, 200);
+  assert.match(response.headers.get('content-disposition'), /inline/);
+  assert.equal(response.headers.get('content-security-policy'), 'sandbox');
+  assert.equal(await response.text(), 'hello preview');
+  const bigForm = new FormData(); bigForm.append('parentId', ''); bigForm.append('file', new Blob(['x'.repeat(300 * 1024)], { type: 'text/plain' }), 'big.txt');
+  result = await request(context.base, '/api/files/upload', { method: 'POST', body: bigForm }, cookie);
+  const bigId = result.result.file.id;
+  const bigResponse = await fetch(`${context.base}/api/files/${bigId}/download?inline=1`, { headers: { Cookie: cookie } });
+  assert.equal(bigResponse.headers.get('x-truncated'), '1');
+  assert.equal((await bigResponse.text()).length, 200 * 1024);
+  const downloadResponse = await fetch(`${context.base}/api/files/${fileId}/download`, { headers: { Cookie: cookie } });
+  assert.match(downloadResponse.headers.get('content-disposition'), /attachment/);
+});
+
+test('回收站返回保留期并自动清理过期项目', async (t) => {
+  const context = await boot();
+  t.after(() => context.server.close());
+  const cookie = await login(context.base);
+  const form = new FormData(); form.append('parentId', ''); form.append('file', new Blob(['old data']), 'old.txt');
+  let result = await request(context.base, '/api/files/upload', { method: 'POST', body: form }, cookie);
+  const fileId = result.result.file.id;
+  const filePath = path.join(context.root, 'data', 'files', 'user-demo', fileId);
+  result = await request(context.base, '/api/trash', {}, cookie);
+  assert.equal(result.result.retentionDays, 30);
+  await request(context.base, `/api/files/${fileId}`, { method: 'DELETE' }, cookie);
+  const file = context.server.store.findFile('user-demo', fileId, true);
+  file.deletedAt = new Date(Date.now() - 31 * 24 * 60 * 60 * 1000).toISOString();
+  const purged = await context.server.store.purgeExpiredTrash();
+  assert.equal(purged >= 1, true);
+  result = await request(context.base, '/api/trash', {}, cookie);
+  assert.equal(result.result.files.length, 0);
+  await assert.rejects(fs.access(filePath));
+});
+
 test('用户 A 无法读取、修改或删除用户 B 的文件', async (t) => {
   const context = await boot();
   t.after(() => context.server.close());
