@@ -29,6 +29,15 @@ npm run check      # 语法检查
 
 ## Docker 部署
 
+镜像由 GitHub Actions 自动构建并推送到 GHCR，每次推送到 `main` 会更新 `latest` 与 commit SHA 标签：
+
+```bash
+docker pull ghcr.io/gaoab1/cloudirve:latest
+docker run -d --name cloudirve-drive -p 4173:4173 -v "$PWD/data:/app/data" ghcr.io/gaoab1/cloudirve:latest
+```
+
+或直接用本仓库 compose 本地构建：
+
 ```bash
 docker compose up -d --build    # 构建并启动，映射 4173 端口
 ```
