@@ -112,6 +112,8 @@ const main = async () => {
   await evalInPage("document.querySelector('#username').value='demo'; document.querySelector('#password').value='cloudirve'; document.querySelector('#login-form button[type=submit]').click()");
   await waitFor("document.querySelector('.workspace')", 'workspace');
   check('登录后进入工作区', true);
+  await waitFor("document.querySelector('#storage-text').textContent.includes('个文件')", 'sidebar storage');
+  await shot('ui-desktop-drive');
 
   // 对话弹窗：新建文件夹
   await evalInPage("document.querySelector('[data-action=new-folder]').click()");
@@ -175,6 +177,21 @@ const main = async () => {
   await evalInPage("document.querySelector('#confirm-action').click()");
   await waitFor("document.querySelector('.empty-state')", 'trash empty after permanent');
   check('永久删除生效', true);
+
+  // 设置页：账户信息、存储用量与修改密码
+  await evalInPage("document.querySelector('[data-action=settings]').click()");
+  await waitFor("document.querySelector('#password-form')", 'settings page');
+  check('设置页可达', await evalInPage("document.body.textContent.includes('账户信息')"));
+  await waitFor("document.querySelector('#settings-storage-text').textContent.includes('个文件')", 'storage stats');
+  check('设置页存储用量已渲染', true);
+  await evalInPage("document.querySelector('#current-password').value='cloudirve'; document.querySelector('#new-password').value='cloudirve2'; document.querySelector('#confirm-password').value='cloudirve2'; document.querySelector('#password-form button[type=submit]').click()");
+  await waitFor("[...document.querySelectorAll('.toast')].some((el) => el.textContent.includes('密码已更新'))", 'password toast');
+  check('修改密码成功反馈', true);
+  await evalInPage("document.querySelector('.user-menu [data-action=logout]').click()");
+  await waitFor("document.querySelector('#login-form')", 'back to login');
+  await evalInPage("document.querySelector('#username').value='demo'; document.querySelector('#password').value='cloudirve2'; document.querySelector('#login-form button[type=submit]').click()");
+  await waitFor("document.querySelector('.workspace')", 'relogin with new password');
+  check('新密码可重新登录', true);
 
   check('无控制台错误', consoleErrors.length === 0);
   check('无未捕获页面异常', pageErrors.length === 0);

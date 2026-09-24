@@ -94,3 +94,68 @@ test('回收站支持递归恢复和永久删除物理文件', async (t) => {
   assert.equal(result.response.status, 200);
   await assert.rejects(fs.access(filePath));
 });
+
+test('存储用量统计与配额硬校验', async (t) => {
+  const context = await boot();
+  t.after(() => context.server.close());
+  const cookie = await login(context.base);
+  let result = await request(context.base, '/api/storage', {}, cookie);
+  assert.equal(result.response.status, 200);
+  assert.deepEqual(result.result, { usedBytes: 0, fileCount: 0, quotaBytes: result.result.quotaBytes });
+  const form = new FormData(); form.append('parentId', ''); form.append('file', new Blob(['12345']), 'five.txt');
+  result = await request(context.base, '/api/files/upload', { method: 'POST', body: form }, cookie);
+  assert.equal(result.response.status, 201);
+  result = await request(context.base, '/api/storage', {}, cookie);
+  assert.equal(result.result.usedBytes, 5);
+  assert.equal(result.result.fileCount, 1);
+  context.server.store.quotaBytes = 10;
+  const bigForm = new FormData(); bigForm.append('parentId', ''); bigForm.append('file', new Blob(['12345678901234567890']), 'big.txt');
+  result = await request(context.base, '/api/files/upload', { method: 'POST', body: bigForm }, cookie);
+  assert.equal(result.response.status, 413);
+  assert.equal(result.result.error.code, 'QUOTA_EXCEEDED');
+});
+
+test('修改密码后新旧密码验证生效', async (t) => {
+  const context = await boot();
+  t.after(() => context.server.close());
+  const cookie = await login(context.base);
+  let result = await request(context.base, '/api/auth/password', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ currentPassword: 'wrong', newPassword: 'new-pass-123' }) }, cookie);
+  assert.equal(result.response.status, 401);
+  result = await request(context.base, '/api/auth/password', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ currentPassword: 'cloudirve', newPassword: 'short' }) }, cookie);
+  assert.equal(result.response.status, 400);
+  result = await request(context.base, '/api/auth/password', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ currentPassword: 'cloudirve', newPassword: 'new-pass-123' }) }, cookie);
+  assert.equal(result.response.status, 200);
+  result = await request(context.base, '/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: 'demo', password: 'cloudirve' }) });
+  assert.equal(result.response.status, 401);
+  result = await request(context.base, '/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: 'demo', password: 'new-pass-123' }) });
+  assert.equal(result.response.status, 200);
+});
+
+test('用户 A 无法读取、修改或删除用户 B 的文件', async (t) => {
+  const context = await boot();
+  t.after(() => context.server.close());
+  const { hashPassword } = await import('../src/store.js');
+  context.server.store.data.users.push({ id: 'user-b', username: 'bee', passwordHash: hashPassword('bee-pass-123') });
+  const cookieA = await login(context.base);
+  let result = await request(context.base, '/api/files/folders', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'A的目录' }) }, cookieA);
+  const folderA = result.result.file.id;
+  const form = new FormData(); form.append('parentId', folderA); form.append('file', new Blob(['a secret']), 'a.txt');
+  result = await request(context.base, '/api/files/upload', { method: 'POST', body: form }, cookieA);
+  const fileA = result.result.file.id;
+  const loginB = await request(context.base, '/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: 'bee', password: 'bee-pass-123' }) });
+  const cookieB = loginB.cookie;
+  result = await request(context.base, '/api/files', {}, cookieB);
+  assert.equal(result.result.files.length, 0);
+  result = await request(context.base, `/api/files/${fileA}/download`, {}, cookieB);
+  assert.equal(result.response.status, 404);
+  result = await request(context.base, `/api/files/${fileA}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'hacked.txt' }) }, cookieB);
+  assert.equal(result.response.status, 404);
+  result = await request(context.base, `/api/files/${fileA}`, { method: 'DELETE' }, cookieB);
+  assert.equal(result.response.status, 404);
+  result = await request(context.base, `/api/trash/${fileA}/permanent`, { method: 'DELETE' }, cookieB);
+  assert.equal(result.response.status, 404);
+  result = await request(context.base, `/api/files?parentId=${folderA}`, {}, cookieB);
+  assert.equal(result.result.files.length, 0);
+  result = await request(context.base, `/api/files/${fileA}/download`, {}, cookieA);
+  assert.equal(result.response.status, 200);
+});

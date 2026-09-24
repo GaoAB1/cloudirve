@@ -8,7 +8,7 @@ const DEFAULT_USER = {
   passwordHash: hashPassword('cloudirve'),
 };
 
-function hashPassword(password, salt = crypto.randomBytes(16).toString('hex')) {
+export function hashPassword(password, salt = crypto.randomBytes(16).toString('hex')) {
   const digest = crypto.scryptSync(password, salt, 64).toString('hex');
   return `scrypt$${salt}$${digest}`;
 }
@@ -29,6 +29,7 @@ export class Store {
     this.metaPath = path.join(this.dataDir, 'metadata.json');
     this.sessions = new Map();
     this.data = { users: [], files: [] };
+    this.quotaBytes = Number(process.env.STORAGE_QUOTA_BYTES || 1024 * 1024 * 1024);
   }
 
   async init() {
@@ -76,6 +77,23 @@ export class Store {
     this.sessions.delete(token);
   }
 
+  storageStats(userId) {
+    const files = this.data.files.filter((file) => file.userId === userId && !file.deletedAt && !file.isDirectory);
+    return {
+      usedBytes: files.reduce((sum, file) => sum + (file.size || 0), 0),
+      fileCount: files.length,
+      quotaBytes: this.quotaBytes,
+    };
+  }
+
+  async changePassword(userId, currentPassword, newPassword) {
+    const user = this.data.users.find((item) => item.id === userId);
+    if (!user || !verifyPassword(currentPassword, user.passwordHash)) throw new Error('INVALID_CREDENTIALS');
+    if (typeof newPassword !== 'string' || newPassword.length < 6 || newPassword.length > 128) throw new Error('INVALID_PASSWORD');
+    user.passwordHash = hashPassword(newPassword);
+    await this.persist();
+  }
+
   listFiles(userId, parentId = null, includeDeleted = false) {
     return this.data.files
       .filter((file) => file.userId === userId && file.parentId === parentId && (includeDeleted ? file.deletedAt : !file.deletedAt))
@@ -105,6 +123,7 @@ export class Store {
     this.validateName(name);
     this.assertParent(userId, parentId);
     this.assertUnique(userId, parentId, name);
+    if (this.storageStats(userId).usedBytes + buffer.length > this.quotaBytes) throw new Error('QUOTA_EXCEEDED');
     const now = new Date().toISOString();
     const file = { id: crypto.randomUUID(), userId, parentId: parentId || null, name, type: path.extname(name).slice(1).toUpperCase() || 'FILE', size: buffer.length, mimeType, isDirectory: false, deletedAt: null, createdAt: now, updatedAt: now };
     await fs.mkdir(path.dirname(this.pathFor(file)), { recursive: true });

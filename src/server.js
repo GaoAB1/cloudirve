@@ -17,7 +17,7 @@ export function createServer({ dataRoot = path.join(__dirname, '..') } = {}) {
       if (req.url.startsWith('/api/')) await handleApi(req, res, store);
       else await serveStatic(req, res);
     } catch (error) {
-      const known = { AUTH_REQUIRED: [401, '请先登录'], INVALID_CREDENTIALS: [401, '用户名或密码错误'], INVALID_JSON: [400, '请求格式错误'], INVALID_NAME: [400, '名称不合法'], DUPLICATE_NAME: [409, '当前目录已存在同名项目'], PARENT_NOT_FOUND: [404, '目标目录不存在'], FILE_NOT_FOUND: [404, '文件不存在或已被删除'], FILE_TOO_LARGE: [413, '文件超过 25 MB 限制'], UPLOAD_REQUIRED: [400, '请选择要上传的文件'] }[error.message];
+      const known = { AUTH_REQUIRED: [401, '请先登录'], INVALID_CREDENTIALS: [401, '用户名或密码错误'], INVALID_JSON: [400, '请求格式错误'], INVALID_NAME: [400, '名称不合法'], INVALID_PASSWORD: [400, '新密码需为 6-128 位'], DUPLICATE_NAME: [409, '当前目录已存在同名项目'], PARENT_NOT_FOUND: [404, '目标目录不存在'], FILE_NOT_FOUND: [404, '文件不存在或已被删除'], FILE_TOO_LARGE: [413, '文件超过 25 MB 限制'], QUOTA_EXCEEDED: [413, '存储空间不足，请清理后再试'], UPLOAD_REQUIRED: [400, '请选择要上传的文件'] }[error.message];
       if (known) return sendJson(res, known[0], { error: { code: error.message, message: known[1] } });
       console.error(error);
       sendJson(res, 500, { error: { code: 'INTERNAL_ERROR', message: '服务暂时不可用，请稍后重试' } });
@@ -44,6 +44,13 @@ async function handleApi(req, res, store) {
   const user = store.userFromToken(parseCookies(req.headers.cookie).cloudirve_session);
   if (req.method === 'GET' && url.pathname === '/api/auth/me') return user ? sendJson(res, 200, { user: { id: user.id, username: user.username } }) : sendJson(res, 401, { error: { code: 'AUTH_REQUIRED', message: '请先登录' } });
   if (!user) throw new Error('AUTH_REQUIRED');
+
+  if (req.method === 'GET' && url.pathname === '/api/storage') return sendJson(res, 200, store.storageStats(user.id));
+  if (req.method === 'PATCH' && url.pathname === '/api/auth/password') {
+    const body = await readJson(req);
+    await store.changePassword(user.id, body.currentPassword, body.newPassword);
+    return sendJson(res, 200, { ok: true });
+  }
 
   if (req.method === 'GET' && url.pathname === '/api/files') {
     const parentId = url.searchParams.get('parentId') || null;
