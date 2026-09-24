@@ -67,7 +67,7 @@ async function waitFor(expression, label, timeout = 10000) {
     await new Promise((r) => setTimeout(r, 120));
   }
   let body = '';
-  try { body = await evalInPage("document.body.innerText.replace(/\\s+/g, ' ').slice(0, 220)"); } catch {}
+  try { body = await evalInPage("document.querySelector('#app').innerText.replace(/\\s+/g, ' ').slice(0, 220)"); } catch {}
   throw new Error(`waitFor timeout: ${label} | page: ${body}`);
 }
 async function shot(name) {
@@ -170,12 +170,13 @@ const main = async () => {
   await waitFor(rowVisible('测试目录'), 'restored row');
   check('恢复后回到我的文件', true);
 
-  // 搜索：输入关键词，点击结果跳转目录
+  // 搜索：输入关键词，等搜索结果真实渲染（data-search-results 标记）后再点击，避开旧列表竞争
   await evalInPage("const si = document.querySelector('#search-input'); si.value = '测试'; si.dispatchEvent(new Event('input', { bubbles: true }))");
-  await waitFor("document.querySelector('#search-input') && [...document.querySelectorAll('.file-name button')].some((b) => b.textContent === '测试目录')", 'search results');
+  await waitFor("document.querySelector('#file-area').dataset.searchResults === '1' && [...document.querySelectorAll('.file-name button')].some((b) => b.textContent === '测试目录')", 'search results rendered');
   check('搜索命中目标目录', true);
+  await waitFor("document.querySelector('[data-action=open]')", 'search result open button');
   await evalInPage("document.querySelector('[data-action=open]').click()");
-  await waitFor("document.querySelector('.breadcrumb') && [...document.querySelectorAll('.breadcrumb button')].some((b) => b.textContent === '测试目录')", 'search jump breadcrumb');
+  await waitFor("!document.querySelector('#file-area').dataset.searchResults && [...document.querySelectorAll('.breadcrumb button')].some((b) => b.textContent === '测试目录')", 'search jump breadcrumb');
   check('搜索结果跳转到所在目录', true);
 
   // 上传面板：CDP 设置真实文件，观察进度面板
@@ -208,6 +209,11 @@ const main = async () => {
   check('移动端无横向滚动', await evalInPage("document.documentElement.scrollWidth <= window.innerWidth + 1"));
   await shot('ui-mobile-cards');
   await viewport(1440, 900);
+
+  // 显式回到根目录，保证后续删除流程操作的是 测试目录 本身
+  await waitFor("document.querySelector('[data-action=root]')", 'root breadcrumb');
+  await evalInPage("document.querySelector('[data-action=root]').click()");
+  await waitFor(rowVisible('测试目录'), 'back to root listing');
 
   // 回收站：永久删除
   await evalInPage("document.querySelector('[data-action=delete]').click()");
