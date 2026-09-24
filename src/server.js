@@ -107,6 +107,18 @@ async function handleApi(req, res, store) {
     await store.softDelete(user.id, fileMatch[1]);
     return sendJson(res, 200, { ok: true });
   }
+  if (req.method === 'POST' && url.pathname === '/api/files/batch-delete') {
+    const body = await readJson(req);
+    return sendJson(res, 200, { deleted: await store.softDeleteMany(user.id, body.ids) });
+  }
+  if (req.method === 'POST' && url.pathname === '/api/trash/batch-restore') {
+    const body = await readJson(req);
+    return sendJson(res, 200, { restored: await store.restoreMany(user.id, body.ids) });
+  }
+  if (req.method === 'POST' && url.pathname === '/api/trash/batch-permanent') {
+    const body = await readJson(req);
+    return sendJson(res, 200, { deleted: await store.permanentDeleteMany(user.id, body.ids) });
+  }
   if (req.method === 'GET' && url.pathname === '/api/trash') return sendJson(res, 200, { files: store.data.files.filter((file) => file.userId === user.id && file.deletedAt).sort((a, b) => b.deletedAt.localeCompare(a.deletedAt)), retentionDays: store.trashRetentionDays });
   const restoreMatch = url.pathname.match(/^\/api\/trash\/([^/]+)\/restore$/);
   if (restoreMatch && req.method === 'POST') return sendJson(res, 200, { file: await store.restore(user.id, restoreMatch[1]) });

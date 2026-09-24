@@ -204,6 +204,36 @@ test('回收站返回保留期并自动清理过期项目', async (t) => {
   await assert.rejects(fs.access(filePath));
 });
 
+test('批量删除、恢复与永久删除端点忽略越权与不存在的 id', async (t) => {
+  const context = await boot();
+  t.after(() => context.server.close());
+  const { hashPassword } = await import('../src/store.js');
+  context.server.store.data.users.push({ id: 'user-b', username: 'bee', passwordHash: hashPassword('bee-pass-123') });
+  const cookieA = await login(context.base);
+  const form1 = new FormData(); form1.append('parentId', ''); form1.append('file', new Blob(['one']), 'one.txt');
+  let result = await request(context.base, '/api/files/upload', { method: 'POST', body: form1 }, cookieA);
+  const fileOne = result.result.file.id;
+  const form2 = new FormData(); form2.append('parentId', ''); form2.append('file', new Blob(['two']), 'two.txt');
+  result = await request(context.base, '/api/files/upload', { method: 'POST', body: form2 }, cookieA);
+  const fileTwo = result.result.file.id;
+  result = await request(context.base, '/api/files/batch-delete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids: [fileOne, fileTwo, 'missing-id'] }) }, cookieA);
+  assert.equal(result.response.status, 200);
+  assert.equal(result.result.deleted, 2);
+  result = await request(context.base, '/api/trash', {}, cookieA);
+  assert.equal(result.result.files.length, 2);
+  const loginB = await request(context.base, '/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: 'bee', password: 'bee-pass-123' }) });
+  result = await request(context.base, '/api/trash/batch-restore', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids: [fileOne, fileTwo] }) }, loginB.cookie);
+  assert.equal(result.result.restored, 0);
+  result = await request(context.base, '/api/trash/batch-restore', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids: [fileOne] }) }, cookieA);
+  assert.equal(result.result.restored, 1);
+  result = await request(context.base, '/api/trash/batch-permanent', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids: [fileTwo, 'missing-id'] }) }, cookieA);
+  assert.equal(result.result.deleted, 1);
+  result = await request(context.base, '/api/trash', {}, cookieA);
+  assert.equal(result.result.files.length, 0);
+  result = await request(context.base, '/api/files', {}, cookieA);
+  assert.equal(result.result.files.length, 1);
+});
+
 test('用户 A 无法读取、修改或删除用户 B 的文件', async (t) => {
   const context = await boot();
   t.after(() => context.server.close());

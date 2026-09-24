@@ -207,6 +207,32 @@ export class Store {
     await this.persist();
   }
 
+  async softDeleteMany(userId, ids) {
+    let deleted = 0;
+    for (const id of Array.isArray(ids) ? ids : []) {
+      if (!this.findFile(userId, id)) continue;
+      await this.softDelete(userId, id);
+      deleted += 1;
+    }
+    return deleted;
+  }
+
+  async restoreMany(userId, ids) {
+    let restored = 0;
+    for (const id of Array.isArray(ids) ? ids : []) {
+      try { await this.restore(userId, id); restored += 1; } catch {}
+    }
+    return restored;
+  }
+
+  async permanentDeleteMany(userId, ids) {
+    let deleted = 0;
+    for (const id of Array.isArray(ids) ? ids : []) {
+      try { await this.permanentDelete(userId, id); deleted += 1; } catch {}
+    }
+    return deleted;
+  }
+
   async restore(userId, id) {
     const file = this.findFile(userId, id, true);
     if (!file || !file.deletedAt) throw new Error('FILE_NOT_FOUND');
