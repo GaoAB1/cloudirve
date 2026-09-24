@@ -131,6 +131,37 @@ test('修改密码后新旧密码验证生效', async (t) => {
   assert.equal(result.response.status, 200);
 });
 
+test('搜索按文件名模糊匹配且只返回自己的文件', async (t) => {
+  const context = await boot();
+  t.after(() => context.server.close());
+  const { hashPassword } = await import('../src/store.js');
+  context.server.store.data.users.push({ id: 'user-b', username: 'bee', passwordHash: hashPassword('bee-pass-123') });
+  const cookieA = await login(context.base);
+  let result = await request(context.base, '/api/files/folders', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: '资料' }) }, cookieA);
+  const folderId = result.result.file.id;
+  const form = new FormData(); form.append('parentId', folderId); form.append('file', new Blob(['data']), 'Report.TXT');
+  result = await request(context.base, '/api/files/upload', { method: 'POST', body: form }, cookieA);
+  const fileId = result.result.file.id;
+  result = await request(context.base, '/api/files/search?q=report', {}, cookieA);
+  assert.equal(result.response.status, 200);
+  assert.equal(result.result.files.length, 1);
+  assert.equal(result.result.files[0].id, fileId);
+  assert.equal(result.result.files[0].parentName, '资料');
+  assert.equal(result.result.files[0].ancestors.length, 1);
+  assert.equal(result.result.files[0].ancestors[0].name, '资料');
+  result = await request(context.base, '/api/files/search?q=资料', {}, cookieA);
+  assert.equal(result.result.files.length, 1);
+  assert.equal(result.result.files[0].isDirectory, true);
+  assert.deepEqual(result.result.files[0].ancestors, []);
+  result = await request(context.base, '/api/files/search?q=', {}, cookieA);
+  assert.equal(result.result.files.length, 0);
+  const loginB = await request(context.base, '/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: 'bee', password: 'bee-pass-123' }) });
+  result = await request(context.base, '/api/files/search?q=report', {}, loginB.cookie);
+  assert.equal(result.result.files.length, 0);
+  result = await request(context.base, '/api/files/search?q=report');
+  assert.equal(result.response.status, 401);
+});
+
 test('用户 A 无法读取、修改或删除用户 B 的文件', async (t) => {
   const context = await boot();
   t.after(() => context.server.close());

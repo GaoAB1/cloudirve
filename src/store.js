@@ -104,6 +104,28 @@ export class Store {
     return this.data.files.find((file) => file.id === id && file.userId === userId && (includeDeleted || !file.deletedAt)) || null;
   }
 
+  ancestorsFor(userId, parentId) {
+    const chain = [];
+    let cursor = parentId;
+    while (cursor) {
+      const parent = this.data.files.find((file) => file.id === cursor && file.userId === userId);
+      if (!parent) break;
+      chain.unshift({ id: parent.id, name: parent.name });
+      cursor = parent.parentId;
+    }
+    return chain;
+  }
+
+  searchFiles(userId, query) {
+    const q = String(query || '').trim().toLowerCase();
+    if (!q) return [];
+    return this.data.files
+      .filter((file) => file.userId === userId && !file.deletedAt && file.name.toLowerCase().includes(q))
+      .slice(0, 100)
+      .map((file) => ({ ...file, parentName: file.parentId ? (this.data.files.find((p) => p.id === file.parentId)?.name || null) : null, ancestors: this.ancestorsFor(userId, file.parentId) }))
+      .sort((a, b) => Number(b.isDirectory) - Number(a.isDirectory) || a.name.localeCompare(b.name));
+  }
+
   pathFor(file) {
     return path.join(this.filesDir, file.userId, file.id);
   }

@@ -56,6 +56,9 @@ async function handleApi(req, res, store) {
     const parentId = url.searchParams.get('parentId') || null;
     return sendJson(res, 200, { files: store.listFiles(user.id, parentId) });
   }
+  if (req.method === 'GET' && url.pathname === '/api/files/search') {
+    return sendJson(res, 200, { files: store.searchFiles(user.id, url.searchParams.get('q')) });
+  }
   if (req.method === 'GET' && url.pathname === '/api/files/breadcrumbs') {
     const ids = (url.searchParams.get('parentId') || '').split(',').filter(Boolean);
     return sendJson(res, 200, { breadcrumbs: ids.map((id) => store.findFile(user.id, id)).filter(Boolean).map(({ id, name }) => ({ id, name })) });

@@ -73,6 +73,13 @@ async function shot(name) {
 async function viewport(w, h, mobile = false) {
   await send('Emulation.setDeviceMetricsOverride', { width: w, height: h, deviceScaleFactor: 2, mobile });
 }
+async function setInputFiles(selector, filePath) {
+  await send('DOM.enable');
+  const doc = await send('DOM.getDocument', { depth: -1 });
+  const node = await send('DOM.querySelector', { nodeId: doc.root.nodeId, selector });
+  await send('DOM.setFileInputFiles', { files: [filePath], nodeId: node.nodeId });
+  await evalInPage(`document.querySelector('${selector}').dispatchEvent(new Event('change', { bubbles: true }))`);
+}
 
 const checks = [];
 function check(name, ok) { checks.push({ name, ok }); console.log(`${ok ? 'PASS' : 'FAIL'}: ${name}`); }
@@ -156,6 +163,26 @@ const main = async () => {
   await evalInPage("document.querySelector('[data-action=drive]').click()");
   await waitFor(rowVisible('测试目录'), 'restored row');
   check('恢复后回到我的文件', true);
+
+  // 搜索：输入关键词，点击结果跳转目录
+  await evalInPage("const si = document.querySelector('#search-input'); si.value = '测试'; si.dispatchEvent(new Event('input', { bubbles: true }))");
+  await waitFor("document.querySelector('#search-input') && [...document.querySelectorAll('.file-name button')].some((b) => b.textContent === '测试目录')", 'search results');
+  check('搜索命中目标目录', true);
+  await evalInPage("document.querySelector('[data-action=open]').click()");
+  await waitFor("document.querySelector('.breadcrumb') && [...document.querySelectorAll('.breadcrumb button')].some((b) => b.textContent === '测试目录')", 'search jump breadcrumb');
+  check('搜索结果跳转到所在目录', true);
+
+  // 上传面板：CDP 设置真实文件，观察进度面板
+  const samplePath = path.join(dataRoot, 'sample-upload.txt');
+  fs.writeFileSync(samplePath, 'hello upload panel');
+  await evalInPage("document.querySelector('[data-action=upload]').click()");
+  await setInputFiles('#file-input', samplePath);
+  await waitFor("document.querySelector('.upload-item.done')", 'upload done');
+  check('上传面板显示完成状态', true);
+  await waitFor(rowVisible('sample-upload.txt'), 'uploaded row');
+  check('上传后列表刷新', true);
+  await waitFor("document.querySelector('#storage-text').textContent.includes('1 个文件')", 'storage update');
+  check('上传后存储用量更新', true);
 
   // 移动端卡片网格（此时目录中存在文件）
   await viewport(375, 720, true);
