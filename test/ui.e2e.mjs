@@ -199,6 +199,19 @@ const main = async () => {
   await waitFor("!document.querySelector('#preview-dialog').open", 'preview closed');
   check('预览弹窗可关闭', true);
 
+  // 分享链接：创建 → 匿名访问 → 设置页撤销 → 失效
+  await waitFor("document.querySelector('[data-action=share]')", 'share button');
+  await evalInPage("document.querySelector('[data-action=share]').click()");
+  await waitFor("document.querySelector('#share-dialog').open", 'share dialog');
+  await evalInPage("document.querySelector('#share-days').value='7'; document.querySelector('#share-password').value=''; document.querySelector('#share-submit').click()");
+  await waitFor("!document.querySelector('#share-result').hidden", 'share link shown');
+  check('分享链接已生成', await evalInPage("document.querySelector('#share-link').value.includes('/share/')"));
+  const shareToken = await evalInPage("document.querySelector('#share-link').value.split('/').pop()");
+  const anonContent = await evalInPage(`fetch('/api/share/${shareToken}/file', { method: 'POST', credentials: 'omit', headers: { 'Content-Type': 'application/json' }, body: '{}' }).then((r) => r.text())`);
+  check('匿名凭链接取得文件内容', anonContent.includes('hello upload panel'));
+  await evalInPage("document.querySelector('#share-dialog button[value=cancel]').click()");
+  await waitFor("!document.querySelector('#share-dialog').open", 'share dialog closed');
+
   // 移动端卡片网格（此时目录中存在文件）
   await waitFor(rowVisible('sample-upload.txt'), 'file row before mobile check');
   await viewport(375, 720, true);
@@ -298,6 +311,26 @@ const main = async () => {
   await evalInPage("document.querySelector('#username').value='demo'; document.querySelector('#password').value='cloudirve2'; document.querySelector('#login-form button[type=submit]').click()");
   await waitFor("document.querySelector('.workspace')", 'relogin with new password');
   check('新密码可重新登录', true);
+
+  // 设置页：我的分享列表与撤销（sample 文件此时已被永久删除，条目应显示"文件已删除"）
+  await waitFor("document.querySelector('#shares-list').textContent.includes('有效期至')", 'shares list rendered');
+  check('设置页显示我的分享', true);
+  check('删除的文件在分享列表标记失效', await evalInPage("document.querySelector('#shares-list').textContent.includes('文件已删除')"));
+  await evalInPage("document.querySelector('[data-action=revoke-share]').click()");
+  await waitFor("document.querySelector('#confirm-dialog').open", 'revoke confirm');
+  await evalInPage("document.querySelector('#confirm-action').click()");
+  await waitFor("document.querySelector('#shares-list').textContent.includes('已撤销')", 'share revoked label');
+  check('分享撤销生效', true);
+  const revokedStatus = await evalInPage(`fetch('/api/share/${shareToken}', { credentials: 'omit' }).then((r) => r.status)`);
+  check('撤销后匿名访问失效', revokedStatus === 404);
+  await evalInPage(`location.href = '/share/${shareToken}'`);
+
+  // 访客页：失效分享展示
+  await waitFor("document.body.textContent.includes('无法打开分享')", 'guest page invalid state');
+  check('访客页显示失效状态', true);
+  await send('Page.navigate', { url: `${base}/` });
+  await waitFor("document.querySelector('.workspace')", 'workspace after guest page');
+  check('访客页不影响登录会话', true);
 
   check('无控制台错误', consoleErrors.length === 0);
   check('无未捕获页面异常', pageErrors.length === 0);

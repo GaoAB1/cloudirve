@@ -12,6 +12,22 @@
 </head>
 <body>
   <main id="app" class="app-shell"></main>
+  <dialog id="share-dialog" class="confirm-dialog input-dialog">
+    <form method="dialog">
+      <p class="eyebrow">Cloudirve</p>
+      <h2 id="share-title">创建分享</h2>
+      <div id="share-create-fields">
+        <div class="field"><label for="share-days">有效期</label><select id="share-days" class="input"><option value="1">1 天</option><option value="7" selected>7 天</option><option value="30">30 天</option></select></div>
+        <div class="field"><label for="share-password">访问密码（可选）</label><input id="share-password" type="text" class="input" placeholder="留空则无需密码" autocomplete="off" maxlength="64" /></div>
+      </div>
+      <div id="share-result" hidden>
+        <div class="field"><label for="share-link">分享链接（有效期 7 天）</label><input id="share-link" class="input" readonly onclick="this.select()" /></div>
+        <p class="muted" id="share-expire-note"></p>
+      </div>
+      <p class="error-text" id="share-error" role="alert"></p>
+      <div class="dialog-actions"><button value="cancel" class="button button-ghost" type="submit">关闭</button><button value="confirm" id="share-submit" class="button button-primary" type="submit">创建分享</button></div>
+    </form>
+  </dialog>
   <aside id="upload-panel" class="upload-panel" hidden></aside>
   <div id="toast-region" class="toast-region" aria-live="polite"></div>
   <dialog id="confirm-dialog" class="confirm-dialog">

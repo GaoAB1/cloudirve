@@ -234,6 +234,61 @@ test('批量删除、恢复与永久删除端点忽略越权与不存在的 id',
   assert.equal(result.result.files.length, 1);
 });
 
+test('分享链接：密码、过期、撤销与文件删除后失效', async (t) => {
+  const context = await boot();
+  t.after(() => context.server.close());
+  const { hashPassword } = await import('../src/store.js');
+  context.server.store.data.users.push({ id: 'user-b', username: 'bee', passwordHash: hashPassword('bee-pass-123') });
+  const cookieA = await login(context.base);
+  const form = new FormData(); form.append('parentId', ''); form.append('file', new Blob(['shared content'], { type: 'text/plain' }), 'share.txt');
+  let result = await request(context.base, '/api/files/upload', { method: 'POST', body: form }, cookieA);
+  const fileId = result.result.file.id;
+  result = await request(context.base, `/api/files/${fileId}/share`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ days: 7, password: '123456' }) }, cookieA);
+  assert.equal(result.response.status, 201);
+  const token = result.result.token;
+  assert.equal(result.result.requiresPassword, true);
+  result = await request(context.base, `/api/files/${fileId}/share`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ days: 0 }) }, cookieA);
+  assert.equal(result.response.status, 400);
+  result = await request(context.base, `/api/share/${token}`);
+  assert.equal(result.response.status, 200);
+  assert.equal(result.result.name, 'share.txt');
+  assert.equal(result.result.requiresPassword, true);
+  const postShare = (password) => fetch(`${context.base}/api/share/${token}/file`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password }) });
+  let shareResponse = await postShare(undefined);
+  assert.equal(shareResponse.status, 401);
+  shareResponse = await postShare('wrong-pass');
+  assert.equal(shareResponse.status, 401);
+  shareResponse = await postShare('123456');
+  assert.equal(shareResponse.status, 200);
+  assert.equal(await shareResponse.text(), 'shared content');
+  result = await request(context.base, '/api/shares', {}, cookieA);
+  assert.equal(result.result.shares.length, 1);
+  assert.equal(result.result.shares[0].requiresPassword, true);
+  const loginB = await request(context.base, '/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: 'bee', password: 'bee-pass-123' }) });
+  result = await request(context.base, `/api/shares/${token}`, { method: 'DELETE' }, loginB.cookie);
+  assert.equal(result.response.status, 404);
+  result = await request(context.base, `/api/shares/${token}`, { method: 'DELETE' }, cookieA);
+  assert.equal(result.response.status, 200);
+  shareResponse = await postShare('123456');
+  assert.equal(shareResponse.status, 404);
+  // 文件删除后分享失效
+  result = await request(context.base, `/api/files/${fileId}/share`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ days: 7 }) }, cookieA);
+  const token2 = result.result.token;
+  assert.equal(result.result.requiresPassword, false);
+  await request(context.base, `/api/files/${fileId}`, { method: 'DELETE' }, cookieA);
+  result = await request(context.base, `/api/share/${token2}`);
+  assert.equal(result.response.status, 404);
+  // 过期分享失效
+  const form2 = new FormData(); form2.append('parentId', ''); form2.append('file', new Blob(['expiring']), 'expiring.txt');
+  result = await request(context.base, '/api/files/upload', { method: 'POST', body: form2 }, cookieA);
+  const file2 = result.result.file.id;
+  result = await request(context.base, `/api/files/${file2}/share`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ days: 7 }) }, cookieA);
+  const share3 = context.server.store.data.shares.find((item) => item.token === result.result.token);
+  share3.expiresAt = new Date(Date.now() - 1000).toISOString();
+  result = await request(context.base, `/api/share/${result.result.token}`);
+  assert.equal(result.response.status, 404);
+});
+
 test('用户 A 无法读取、修改或删除用户 B 的文件', async (t) => {
   const context = await boot();
   t.after(() => context.server.close());

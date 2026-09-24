@@ -17,7 +17,7 @@ export function createServer({ dataRoot = path.join(__dirname, '..') } = {}) {
       if (req.url.startsWith('/api/')) await handleApi(req, res, store);
       else await serveStatic(req, res);
     } catch (error) {
-      const known = { AUTH_REQUIRED: [401, '请先登录'], INVALID_CREDENTIALS: [401, '用户名或密码错误'], INVALID_JSON: [400, '请求格式错误'], INVALID_NAME: [400, '名称不合法'], INVALID_PASSWORD: [400, '新密码需为 6-128 位'], DUPLICATE_NAME: [409, '当前目录已存在同名项目'], PARENT_NOT_FOUND: [404, '目标目录不存在'], FILE_NOT_FOUND: [404, '文件不存在或已被删除'], FILE_TOO_LARGE: [413, '文件超过 25 MB 限制'], QUOTA_EXCEEDED: [413, '存储空间不足，请清理后再试'], UPLOAD_REQUIRED: [400, '请选择要上传的文件'] }[error.message];
+      const known = { AUTH_REQUIRED: [401, '请先登录'], INVALID_CREDENTIALS: [401, '用户名或密码错误'], INVALID_JSON: [400, '请求格式错误'], INVALID_NAME: [400, '名称不合法'], INVALID_PASSWORD: [400, '新密码需为 6-128 位'], INVALID_DAYS: [400, '有效期需为 1-365 天'], DUPLICATE_NAME: [409, '当前目录已存在同名项目'], PARENT_NOT_FOUND: [404, '目标目录不存在'], FILE_NOT_FOUND: [404, '文件不存在或已被删除'], FILE_TOO_LARGE: [413, '文件超过 25 MB 限制'], QUOTA_EXCEEDED: [413, '存储空间不足，请清理后再试'], UPLOAD_REQUIRED: [400, '请选择要上传的文件'], SHARE_NOT_FOUND: [404, '分享不存在或已失效'], SHARE_PASSWORD_REQUIRED: [401, '此分享需要密码'], SHARE_PASSWORD_INVALID: [401, '分享密码错误'] }[error.message];
       if (known) return sendJson(res, known[0], { error: { code: error.message, message: known[1] } });
       console.error(error);
       sendJson(res, 500, { error: { code: 'INTERNAL_ERROR', message: '服务暂时不可用，请稍后重试' } });
@@ -29,6 +29,23 @@ export function createServer({ dataRoot = path.join(__dirname, '..') } = {}) {
 
 async function handleApi(req, res, store) {
   const url = new URL(req.url, 'http://localhost');
+  const shareInfoMatch = url.pathname.match(/^\/api\/share\/([0-9a-f]+)$/);
+  const shareFileMatch = url.pathname.match(/^\/api\/share\/([0-9a-f]+)\/file$/);
+  if (shareInfoMatch && req.method === 'GET') {
+    // 匿名分享端点：无需登录态
+    const resolved = store.resolveShare(shareInfoMatch[1]);
+    if (!resolved) throw new Error('SHARE_NOT_FOUND');
+    const { share, file } = resolved;
+    return sendJson(res, 200, { name: file.name, size: file.size, mimeType: file.mimeType, requiresPassword: !!share.passwordHash, expiresAt: share.expiresAt });
+  }
+  if (shareFileMatch && req.method === 'POST') {
+    const raw = await readBody(req, 64 * 1024);
+    let body = {};
+    try { body = JSON.parse(raw || '{}'); } catch {}
+    const file = store.openShare(shareFileMatch[1], body.password ? String(body.password) : undefined);
+    streamFile(res, store, file, body.inline === true);
+    return;
+  }
   if (req.method === 'POST' && url.pathname === '/api/auth/login') {
     const body = await readJson(req);
     const result = store.authenticate(body.username, body.password);
@@ -82,26 +99,19 @@ async function handleApi(req, res, store) {
   if (downloadMatch && req.method === 'GET') {
     const file = store.findFile(user.id, downloadMatch[1]);
     if (!file || file.isDirectory) throw new Error('FILE_NOT_FOUND');
-    const inline = url.searchParams.get('inline') === '1';
-    const headers = { 'Content-Type': file.mimeType || 'application/octet-stream', 'X-Content-Type-Options': 'nosniff' };
-    if (inline) {
-      // sandbox CSP 禁止内联文档执行脚本（防 SVG XSS），预览一律走前端模态
-      headers['Content-Disposition'] = `inline; filename*=UTF-8''${encodeURIComponent(file.name)}`;
-      headers['Content-Security-Policy'] = 'sandbox';
-      if (isTextFile(file)) {
-        const buffer = await fs.readFile(store.pathFor(file));
-        const content = buffer.subarray(0, 200 * 1024);
-        headers['Content-Length'] = content.length;
-        headers['X-Truncated'] = buffer.length > content.length ? '1' : '0';
-        res.writeHead(200, headers);
-        return res.end(content);
-      }
-    } else {
-      headers['Content-Disposition'] = `attachment; filename*=UTF-8''${encodeURIComponent(file.name)}`;
-    }
-    headers['Content-Length'] = file.size;
-    res.writeHead(200, headers);
-    return createReadStream(store.pathFor(file)).pipe(res);
+    streamFile(res, store, file, url.searchParams.get('inline') === '1');
+    return;
+  }
+  const shareCreateMatch = url.pathname.match(/^\/api\/files\/([^/]+)\/share$/);
+  if (shareCreateMatch && req.method === 'POST') {
+    const body = await readJson(req);
+    return sendJson(res, 201, await store.createShare(user.id, shareCreateMatch[1], Number(body.days), body.password ? String(body.password) : null));
+  }
+  if (req.method === 'GET' && url.pathname === '/api/shares') return sendJson(res, 200, { shares: store.listShares(user.id) });
+  const shareRevokeMatch = url.pathname.match(/^\/api\/shares\/([0-9a-f]+)$/);
+  if (shareRevokeMatch && req.method === 'DELETE') {
+    await store.revokeShare(user.id, shareRevokeMatch[1]);
+    return sendJson(res, 200, { ok: true });
   }
   if (fileMatch && req.method === 'DELETE') {
     await store.softDelete(user.id, fileMatch[1]);
@@ -136,7 +146,17 @@ async function serveStatic(req, res) {
     const content = await fs.readFile(filePath);
     res.writeHead(200, { 'Content-Type': mimeTypes[path.extname(filePath)] || 'application/octet-stream', 'Cache-Control': 'no-cache' });
     res.end(content);
-  } catch { sendJson(res, 404, { error: { code: 'NOT_FOUND', message: '页面不存在' } }); }
+  } catch {
+    // 无扩展名路径（如 /share/:token）回退到 SPA 入口
+    if (req.method === 'GET' && !path.extname(requested)) {
+      try {
+        const index = await fs.readFile(path.join(publicDir, 'index.html'));
+        res.writeHead(200, { 'Content-Type': mimeTypes['.html'], 'Cache-Control': 'no-cache' });
+        return res.end(index);
+      } catch {}
+    }
+    sendJson(res, 404, { error: { code: 'NOT_FOUND', message: '页面不存在' } });
+  }
 }
 
 function parseCookies(value = '') { return Object.fromEntries(value.split(';').map((part) => part.trim().split('=').map(decodeURIComponent)).filter(([key]) => key)); }
@@ -146,6 +166,28 @@ function isTextFile(file) {
   if (mime.startsWith('text/') || mime.includes('json') || mime.includes('javascript') || mime.includes('xml')) return true;
   const ext = (file.name.split('.').pop() || '').toLowerCase();
   return textExtensions.has(ext);
+}
+
+// 统一的文件内容响应：inline 用于预览（文本截断 200KB + CSP sandbox 防内联脚本），否则 attachment
+function streamFile(res, store, file, inline) {
+  const headers = { 'Content-Type': file.mimeType || 'application/octet-stream', 'X-Content-Type-Options': 'nosniff' };
+  if (inline) {
+    headers['Content-Disposition'] = `inline; filename*=UTF-8''${encodeURIComponent(file.name)}`;
+    headers['Content-Security-Policy'] = 'sandbox';
+    if (isTextFile(file)) {
+      return fs.readFile(store.pathFor(file)).then((buffer) => {
+        const content = buffer.subarray(0, 200 * 1024);
+        headers['Content-Length'] = content.length;
+        headers['X-Truncated'] = buffer.length > content.length ? '1' : '0';
+        res.writeHead(200, headers);
+        res.end(content);
+      });
+    }
+  }
+  headers['Content-Disposition'] = `${inline ? 'inline' : 'attachment'}; filename*=UTF-8''${encodeURIComponent(file.name)}`;
+  headers['Content-Length'] = file.size;
+  res.writeHead(200, headers);
+  createReadStream(store.pathFor(file)).pipe(res);
 }
 function sendJson(res, status, body) { res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' }); res.end(JSON.stringify(body)); }
 async function readJson(req) { try { return JSON.parse(await readBody(req, 1024 * 1024)); } catch { throw new Error('INVALID_JSON'); } }

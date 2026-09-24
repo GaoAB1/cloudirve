@@ -46,6 +46,7 @@ export class Store {
       this.data.users = [{ ...DEFAULT_USER }];
       await this.persist();
     }
+    if (!Array.isArray(this.data.shares)) this.data.shares = [];
     let migrated = false;
     for (const user of this.data.users) {
       if (user.password && !user.passwordHash) {
@@ -280,5 +281,70 @@ export class Store {
 
   validateName(name) {
     if (typeof name !== 'string' || !name.trim() || name.length > 180 || /[\\/\u0000-\u001f]/.test(name)) throw new Error('INVALID_NAME');
+  }
+
+  async createShare(userId, fileId, days, password) {
+    const file = this.findFile(userId, fileId);
+    if (!file || file.isDirectory) throw new Error('FILE_NOT_FOUND');
+    if (!Number.isInteger(days) || days < 1 || days > 365) throw new Error('INVALID_DAYS');
+    const share = {
+      id: crypto.randomUUID(),
+      token: crypto.randomBytes(24).toString('hex'),
+      userId,
+      fileId,
+      expiresAt: new Date(Date.now() + days * 24 * 60 * 60 * 1000).toISOString(),
+      passwordHash: password ? hashPassword(String(password)) : null,
+      revoked: false,
+      createdAt: new Date().toISOString(),
+    };
+    this.data.shares.push(share);
+    await this.persist();
+    return { token: share.token, expiresAt: share.expiresAt, requiresPassword: !!password };
+  }
+
+  resolveShare(token) {
+    const share = (this.data.shares || []).find((item) => item.token === token);
+    if (!share || share.revoked || new Date(share.expiresAt).getTime() <= Date.now()) return null;
+    const file = this.findFile(share.userId, share.fileId);
+    if (!file || file.isDirectory) return null;
+    return { share, file };
+  }
+
+  openShare(token, password) {
+    const resolved = this.resolveShare(token);
+    if (!resolved) throw new Error('SHARE_NOT_FOUND');
+    const { share, file } = resolved;
+    if (share.passwordHash) {
+      if (!password) throw new Error('SHARE_PASSWORD_REQUIRED');
+      if (!verifyPassword(String(password), share.passwordHash)) throw new Error('SHARE_PASSWORD_INVALID');
+    }
+    return file;
+  }
+
+  listShares(userId) {
+    return (this.data.shares || [])
+      .filter((share) => share.userId === userId)
+      .map((share) => {
+        const file = this.data.files.find((item) => item.id === share.fileId && item.userId === userId);
+        return {
+          token: share.token,
+          fileName: file ? file.name : null,
+          size: file ? file.size : 0,
+          mimeType: file ? file.mimeType : null,
+          fileDeleted: !file || !!file.deletedAt,
+          expiresAt: share.expiresAt,
+          revoked: !!share.revoked,
+          requiresPassword: !!share.passwordHash,
+          createdAt: share.createdAt,
+        };
+      })
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  }
+
+  async revokeShare(userId, token) {
+    const share = (this.data.shares || []).find((item) => item.token === token && item.userId === userId);
+    if (!share) throw new Error('SHARE_NOT_FOUND');
+    share.revoked = true;
+    await this.persist();
   }
 }
