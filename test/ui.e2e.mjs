@@ -61,10 +61,14 @@ async function evalInPage(expression) {
 async function waitFor(expression, label, timeout = 10000) {
   const start = Date.now();
   while (Date.now() - start < timeout) {
-    if (await evalInPage(`!!(${expression})`)) return true;
+    try {
+      if (await evalInPage(`!!(${expression})`)) return true;
+    } catch {}
     await new Promise((r) => setTimeout(r, 120));
   }
-  throw new Error(`waitFor timeout: ${label}`);
+  let body = '';
+  try { body = await evalInPage("document.body.innerText.replace(/\\s+/g, ' ').slice(0, 220)"); } catch {}
+  throw new Error(`waitFor timeout: ${label} | page: ${body}`);
 }
 async function shot(name) {
   const res = await send('Page.captureScreenshot', { format: 'png' });
@@ -195,7 +199,9 @@ const main = async () => {
   check('预览弹窗可关闭', true);
 
   // 移动端卡片网格（此时目录中存在文件）
+  await waitFor(rowVisible('sample-upload.txt'), 'file row before mobile check');
   await viewport(375, 720, true);
+  await waitFor("document.querySelector('.file-grid')", 'mobile grid element exists');
   await waitFor("getComputedStyle(document.querySelector('.file-grid')).display === 'grid'", 'mobile grid');
   check('移动端切换卡片网格', true);
   check('桌面表格在移动端隐藏', await evalInPage("getComputedStyle(document.querySelector('.file-table')).display === 'none'"));
@@ -216,42 +222,56 @@ const main = async () => {
   check('永久删除生效', true);
 
   // 批量操作：批量删除 → 批量恢复 → 批量永久删除
+  await waitFor("document.querySelector('[data-action=drive]')", 'sidebar drive nav');
   await evalInPage("document.querySelector('[data-action=drive]').click()");
   await waitFor("document.querySelector('.empty-state') || document.querySelector('.file-table')", 'drive ready');
+  await waitFor("document.querySelector('[data-action=new-folder]')", 'new folder button');
   await evalInPage("document.querySelector('[data-action=new-folder]').click()");
   await waitFor("document.querySelector('#input-dialog').open", 'batch folder a dialog');
   await evalInPage("document.querySelector('#input-value').value='批量A'; document.querySelector('#input-confirm').click()");
   await waitFor(rowVisible('批量A'), 'batch folder a');
+  await waitFor("document.querySelector('[data-action=new-folder]')", 'new folder button again');
   await evalInPage("document.querySelector('[data-action=new-folder]').click()");
   await waitFor("document.querySelector('#input-dialog').open", 'batch folder b dialog');
   await evalInPage("document.querySelector('#input-value').value='批量B'; document.querySelector('#input-confirm').click()");
   await waitFor(rowVisible('批量B'), 'batch folder b');
+  await waitFor("document.querySelector('[data-action=select-all]')", 'select all checkbox');
   await evalInPage("document.querySelector('[data-action=select-all]').click()");
   await waitFor("!document.querySelector('#batch-bar').hidden", 'batch bar visible');
   check('多选后批量条出现', await evalInPage("document.body.textContent.includes('已选 2 项')"));
+  await waitFor("document.querySelector('[data-action=batch-delete]')", 'batch delete button');
   await evalInPage("document.querySelector('[data-action=batch-delete]').click()");
   await waitFor("document.querySelector('#confirm-dialog').open", 'batch delete confirm');
   await evalInPage("document.querySelector('#confirm-action').click()");
   await waitFor("document.querySelector('.empty-state')", 'drive empty after batch delete');
   check('批量删除生效', true);
+  await waitFor("document.querySelector('[data-action=trash]')", 'trash nav');
   await evalInPage("document.querySelector('[data-action=trash]').click()");
   await waitFor("document.querySelector('.file-table')", 'trash table');
+  await waitFor("document.querySelector('[data-action=select-all]')", 'trash select all');
   await evalInPage("document.querySelector('[data-action=select-all]').click()");
   await waitFor("!document.querySelector('#batch-bar').hidden", 'trash batch bar');
+  await waitFor("document.querySelector('[data-action=batch-restore]')", 'batch restore button');
   await evalInPage("document.querySelector('[data-action=batch-restore]').click()");
   await waitFor("document.querySelector('.empty-state')", 'trash empty after batch restore');
   check('批量恢复生效', true);
+  await waitFor("document.querySelector('[data-action=drive]')", 'drive nav again');
   await evalInPage("document.querySelector('[data-action=drive]').click()");
   await waitFor(rowVisible('批量A'), 'restored batch folder a');
+  await waitFor("document.querySelector('[data-action=select-all]')", 'select all again');
   await evalInPage("document.querySelector('[data-action=select-all]').click()");
   await waitFor("!document.querySelector('#batch-bar').hidden", 'batch bar again');
+  await waitFor("document.querySelector('[data-action=batch-delete]')", 'batch delete again');
   await evalInPage("document.querySelector('[data-action=batch-delete]').click()");
   await waitFor("document.querySelector('#confirm-dialog').open", 'batch delete confirm again');
   await evalInPage("document.querySelector('#confirm-action').click()");
+  await waitFor("document.querySelector('[data-action=trash]')", 'trash nav again');
   await evalInPage("document.querySelector('[data-action=trash]').click()");
   await waitFor("document.querySelector('.file-table')", 'trash table again');
+  await waitFor("document.querySelector('[data-action=select-all]')", 'trash select all again');
   await evalInPage("document.querySelector('[data-action=select-all]').click()");
   await waitFor("!document.querySelector('#batch-bar').hidden", 'trash batch bar again');
+  await waitFor("document.querySelector('[data-action=batch-permanent]')", 'batch permanent button');
   await evalInPage("document.querySelector('[data-action=batch-permanent]').click()");
   await waitFor("document.querySelector('#confirm-dialog').open", 'batch permanent confirm');
   await evalInPage("document.querySelector('#confirm-action').click()");
