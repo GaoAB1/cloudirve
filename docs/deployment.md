@@ -89,7 +89,7 @@ docker compose up -d --build
 | `OFFICE_PUBLIC_URL` | 浏览器 → Document Server | 浏览器可达地址：局域网 `http://<NAS IP>:8080`；公网反代 `https://office.example.com` |
 | `OFFICE_CALLBACK_ORIGIN` | Document Server → Cloudirve | DS 容器可达地址；同一 compose 网络保持默认 `http://cloudirve:4173`；跨机部署改为 DS 可访问的主应用地址 |
 
-JWT 约束：`OFFICE_JWT_SECRET` 会同时注入两端（compose 中 Document Server 的 `JWT_ENABLED` 已绑定 `OFFICE_ENABLED`），两端必须一致，否则编辑器无法加载或保存回调 401。修改 `.env` 后需 `docker compose up -d` 重建容器生效。
+JWT 约束：Document Server 的 JWT 校验在 compose 中固定开启（启动脚本只认 `"true"`/`"false"` 字面量），密钥取 `OFFICE_JWT_SECRET` 并与主应用共享，两端必须一致，否则编辑器无法加载或保存回调 401。修改 `.env` 后需 `docker compose up -d` 重建容器生效。
 
 > **不想运行 Document Server？** office 服务默认随 `docker compose up -d` 启动（约 1.5GB 内存）。只用主应用时执行 `docker compose up -d cloudirve` 只启动主应用，或用 `docker compose stop office` 停掉已运行的 DS。
 

@@ -22,7 +22,9 @@ services:
     image: onlyoffice/documentserver:latest
     container_name: cloudirve-office
     environment:
-      JWT_ENABLED: ${OFFICE_ENABLED:-false}
+      # DS 启动脚本只认 "true"/"false" 字面量，传入 "1" 会被当作关闭；
+      # 固定开启 JWT 校验，密钥与主应用共享（OFFICE_JWT_SECRET）
+      JWT_ENABLED: "true"
       JWT_SECRET: ${OFFICE_JWT_SECRET:-}
       JWT_HEADER: Authorization
       # compose 内 DS 通过私有网络地址回调主应用（http://cloudirve:4173），必须允许私有 IP
