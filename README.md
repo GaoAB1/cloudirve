@@ -45,6 +45,7 @@ docker compose up -d --build    # 构建并启动，映射 4173 端口
 - 镜像：`node:22-alpine` 单阶段构建（零 npm 依赖，无需构建层），内置 HEALTHCHECK
 - 数据持久化：`./data:/app/data`（元数据 `metadata.json` + 文件 `files/`），备份该目录即备份全部用户数据
 - 环境变量：`PORT`（默认 4173）、`HOST`（容器内固定 0.0.0.0）
+- OnlyOffice：默认关闭；启用时使用 `OFFICE_ENABLED=1 OFFICE_JWT_SECRET=<随机密钥> docker compose --profile office up -d --build`，并设置 `OFFICE_URL=http://office`、`OFFICE_PUBLIC_URL=<浏览器可访问的 Document Server 地址>`、`OFFICE_CALLBACK_ORIGIN=<Document Server 可访问的 Cloudirve 地址>`。Document Server 默认限制 4GB 内存，NAS 内存不足时建议外置部署。
 
 直接用 Docker CLI：
 

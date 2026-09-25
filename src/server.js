@@ -4,20 +4,23 @@ import { createReadStream } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Store } from './store.js';
+import { officeConfigToken, officeFileType, signOfficeToken, verifyOfficeToken } from './office.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, '..', 'public');
 const maxUploadBytes = 25 * 1024 * 1024;
+const maxOfficeDownloadBytes = 100 * 1024 * 1024;
 const mimeTypes = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml' };
 
-export function createServer({ dataRoot = path.join(__dirname, '..') } = {}) {
+export function createServer({ dataRoot = path.join(__dirname, '..'), officeEnabled = process.env.OFFICE_ENABLED === '1', officeUrl = process.env.OFFICE_URL || 'http://office/', officePublicUrl = process.env.OFFICE_PUBLIC_URL || '', officeCallbackOrigin = process.env.OFFICE_CALLBACK_ORIGIN || '', officeSecret = process.env.OFFICE_JWT_SECRET || '' } = {}) {
   const store = new Store(dataRoot);
+  const office = { enabled: officeEnabled && !!officeSecret, url: officeUrl.replace(/\/$/, ''), publicUrl: officePublicUrl.replace(/\/$/, ''), callbackOrigin: officeCallbackOrigin.replace(/\/$/, ''), secret: officeSecret };
   const server = http.createServer(async (req, res) => {
     try {
-      if (req.url.startsWith('/api/')) await handleApi(req, res, store);
+      if (req.url.startsWith('/api/')) await handleApi(req, res, store, office);
       else await serveStatic(req, res);
     } catch (error) {
-      const known = { AUTH_REQUIRED: [401, '请先登录'], AUTH_DISABLED: [403, '账号已被禁用'], FORBIDDEN: [403, '无权限执行此操作'], LAST_ADMIN: [403, '至少需要保留一个可用的管理员'], INVALID_CREDENTIALS: [401, '用户名或密码错误'], INVALID_JSON: [400, '请求格式错误'], INVALID_NAME: [400, '名称不合法'], INVALID_USERNAME: [400, '用户名需为 1-32 位且不含空格'], INVALID_PASSWORD: [400, '密码需为 6-128 位'], INVALID_DAYS: [400, '有效期需为 1-365 天'], DUPLICATE_NAME: [409, '当前目录已存在同名项目'], PARENT_NOT_FOUND: [404, '目标目录不存在'], FILE_NOT_FOUND: [404, '文件不存在或已被删除'], FILE_TOO_LARGE: [413, '文件超过 25 MB 限制'], QUOTA_EXCEEDED: [413, '存储空间不足，请清理后再试'], UPLOAD_REQUIRED: [400, '请选择要上传的文件'], SHARE_NOT_FOUND: [404, '分享不存在或已失效'], SHARE_PASSWORD_REQUIRED: [401, '此分享需要密码'], SHARE_PASSWORD_INVALID: [401, '分享密码错误'], TOTP_INVALID: [401, '验证码或备用码错误'], TOTP_CHALLENGE_INVALID: [401, '验证已过期，请重新登录'], TOTP_ALREADY_ENABLED: [409, '两步验证已开启'], TOTP_SETUP_REQUIRED: [400, '请先开始两步验证设置'], TOTP_NOT_ENABLED: [400, '两步验证尚未开启'] }[error.message];
+      const known = { AUTH_REQUIRED: [401, '请先登录'], AUTH_DISABLED: [403, '账号已被禁用'], FORBIDDEN: [403, '无权限执行此操作'], LAST_ADMIN: [403, '至少需要保留一个可用的管理员'], INVALID_CREDENTIALS: [401, '用户名或密码错误'], INVALID_JSON: [400, '请求格式错误'], INVALID_NAME: [400, '名称不合法'], INVALID_USERNAME: [400, '用户名需为 1-32 位且不含空格'], INVALID_PASSWORD: [400, '密码需为 6-128 位'], INVALID_DAYS: [400, '有效期需为 1-365 天'], DUPLICATE_NAME: [409, '当前目录已存在同名项目'], PARENT_NOT_FOUND: [404, '目标目录不存在'], FILE_NOT_FOUND: [404, '文件不存在或已被删除'], FILE_TOO_LARGE: [413, '文件超过 25 MB 限制'], QUOTA_EXCEEDED: [413, '存储空间不足，请清理后再试'], UPLOAD_REQUIRED: [400, '请选择要上传的文件'], SHARE_NOT_FOUND: [404, '分享不存在或已失效'], SHARE_PASSWORD_REQUIRED: [401, '此分享需要密码'], SHARE_PASSWORD_INVALID: [401, '分享密码错误'], TOTP_INVALID: [401, '验证码或备用码错误'], TOTP_CHALLENGE_INVALID: [401, '验证已过期，请重新登录'], TOTP_ALREADY_ENABLED: [409, '两步验证已开启'], TOTP_SETUP_REQUIRED: [400, '请先开始两步验证设置'], TOTP_NOT_ENABLED: [400, '两步验证尚未开启'], OFFICE_DISABLED: [404, '在线编辑未启用'], OFFICE_UNSUPPORTED: [400, '该文件类型不支持在线编辑'], OFFICE_TOKEN_INVALID: [401, '在线编辑授权无效'], OFFICE_CALLBACK_INVALID: [400, '在线编辑保存回调无效'], OFFICE_DOWNLOAD_FAILED: [502, '在线编辑文件获取失败'] }[error.message];
       if (known) return sendJson(res, known[0], { error: { code: error.message, message: known[1] } });
       console.error(error);
       sendJson(res, 500, { error: { code: 'INTERNAL_ERROR', message: '服务暂时不可用，请稍后重试' } });
@@ -27,7 +30,7 @@ export function createServer({ dataRoot = path.join(__dirname, '..') } = {}) {
   return server;
 }
 
-async function handleApi(req, res, store) {
+async function handleApi(req, res, store, office) {
   const url = new URL(req.url, 'http://localhost');
   const shareInfoMatch = url.pathname.match(/^\/api\/share\/([0-9a-f]+)$/);
   const shareFileMatch = url.pathname.match(/^\/api\/share\/([0-9a-f]+)\/file$/);
@@ -79,11 +82,67 @@ async function handleApi(req, res, store) {
     res.setHeader('Set-Cookie', 'cloudirve_session=; Max-Age=0; HttpOnly; Path=/; SameSite=Strict');
     return sendJson(res, 200, { ok: true });
   }
+  const officeContentMatch = url.pathname.match(/^\/api\/office\/files\/([^/]+)\/content$/);
+  if (officeContentMatch && req.method === 'GET') {
+    if (!office.enabled) throw new Error('OFFICE_DISABLED');
+    const token = url.searchParams.get('token');
+    const payload = verifyOfficeToken(token, office.secret, 'office-file');
+    if (payload.fileId !== officeContentMatch[1]) throw new Error('OFFICE_TOKEN_INVALID');
+    const file = store.findFile(payload.userId, payload.fileId);
+    if (!file || file.isDirectory) throw new Error('FILE_NOT_FOUND');
+    return streamFile(res, store, file, true);
+  }
+  const officeCallbackMatch = url.pathname.match(/^\/api\/office\/files\/([^/]+)\/callback$/);
+  if (officeCallbackMatch && req.method === 'POST') {
+    if (!office.enabled) throw new Error('OFFICE_DISABLED');
+    const callbackToken = url.searchParams.get('token');
+    const payload = verifyOfficeToken(callbackToken, office.secret, 'office-callback');
+    if (payload.fileId !== officeCallbackMatch[1]) throw new Error('OFFICE_TOKEN_INVALID');
+    const body = await readJson(req);
+    const officeJwt = body.token || String(req.headers.authorization || '').replace(/^Bearer\s+/i, '');
+    if (!officeJwt) throw new Error('OFFICE_CALLBACK_INVALID');
+    verifyOfficeToken(officeJwt, office.secret, 'office-outbox');
+    if (Number(body.status) === 2 || Number(body.status) === 6) {
+      if (!body.url || !isAllowedOfficeUrl(body.url, office.url)) throw new Error('OFFICE_CALLBACK_INVALID');
+      const fetchToken = signOfficeToken({ purpose: 'office-fetch', fileId: payload.fileId }, office.secret, 300);
+      const response = await fetch(body.url, { headers: { Authorization: `Bearer ${fetchToken}` } });
+      if (!response.ok || !response.body) throw new Error('OFFICE_DOWNLOAD_FAILED');
+      const buffer = Buffer.from(await response.arrayBuffer());
+      if (buffer.length > maxOfficeDownloadBytes) throw new Error('FILE_TOO_LARGE');
+      const file = store.findFile(payload.userId, payload.fileId);
+      if (!file || file.isDirectory) throw new Error('FILE_NOT_FOUND');
+      await store.replaceFileContent(file.id, buffer);
+      await store.logActivity(payload.userId, 'office-save', file.name);
+    }
+    return sendJson(res, 200, { error: 0 });
+  }
+
   const sessionToken = parseCookies(req.headers.cookie).cloudirve_session;
   const user = store.userFromToken(sessionToken);
   if (req.method === 'GET' && url.pathname === '/api/auth/me') return user ? sendJson(res, 200, { user: { id: user.id, username: user.username, role: user.role }, sessionExpiresAt: store.data.sessions[sessionToken]?.expiresAt || null }) : sendJson(res, 401, { error: { code: 'AUTH_REQUIRED', message: '请先登录' } });
   if (!user) throw new Error('AUTH_REQUIRED');
 
+  if (req.method === 'GET' && url.pathname === '/api/office/status') return sendJson(res, 200, { enabled: office.enabled, url: office.enabled ? (office.publicUrl || office.url) : null });
+  const officeConfigMatch = url.pathname.match(/^\/api\/office\/files\/([^/]+)\/config$/);
+  if (officeConfigMatch && req.method === 'GET') {
+    if (!office.enabled) throw new Error('OFFICE_DISABLED');
+    const file = store.findFile(user.id, officeConfigMatch[1]);
+    const type = file && officeFileType(file.name);
+    if (!file || file.isDirectory) throw new Error('FILE_NOT_FOUND');
+    if (!type) throw new Error('OFFICE_UNSUPPORTED');
+    const fileToken = signOfficeToken({ purpose: 'office-file', fileId: file.id, userId: user.id }, office.secret, 10 * 60);
+    const callbackToken = signOfficeToken({ purpose: 'office-callback', fileId: file.id, userId: user.id }, office.secret, 30 * 60);
+    const config = {
+      document: { fileType: type.extension, key: `${file.id}-${file.updatedAt}`, title: file.name, url: `${office.callbackOrigin || originFor(req)}/api/office/files/${file.id}/content?token=${encodeURIComponent(fileToken)}` },
+      documentType: type.documentType,
+      editorConfig: { callbackUrl: `${office.callbackOrigin || originFor(req)}/api/office/files/${file.id}/callback?token=${encodeURIComponent(callbackToken)}`, mode: 'edit', lang: 'zh-CN', user: { id: user.id, name: user.username } },
+      height: '100%',
+      type: 'desktop',
+      width: '100%',
+    };
+    config.token = officeConfigToken(config, office.secret);
+    return sendJson(res, 200, { config, editorUrl: office.publicUrl || office.url });
+  }
   if (url.pathname.startsWith('/api/admin/') && user.role !== 'admin') throw new Error('FORBIDDEN');
   if (req.method === 'GET' && url.pathname === '/api/admin/users') return sendJson(res, 200, { users: store.listUsers() });
   if (req.method === 'POST' && url.pathname === '/api/admin/users') {
@@ -256,6 +315,8 @@ async function serveStatic(req, res) {
 }
 
 function parseCookies(value = '') { return Object.fromEntries(value.split(';').map((part) => part.trim().split('=').map(decodeURIComponent)).filter(([key]) => key)); }
+function originFor(req) { const protocol = req.headers['x-forwarded-proto'] || 'http'; const host = req.headers['x-forwarded-host'] || req.headers.host || '127.0.0.1'; return `${protocol}://${host}`; }
+function isAllowedOfficeUrl(value, officeUrl) { try { const url = new URL(value); const base = new URL(officeUrl); return url.protocol === base.protocol && url.host === base.host; } catch { return false; } }
 const textExtensions = new Set(['txt', 'md', 'json', 'js', 'mjs', 'css', 'csv', 'log', 'xml', 'yml', 'yaml', 'html', 'htm', 'svg', 'sh', 'py', 'ini', 'conf']);
 function isTextFile(file) {
   const mime = (file.mimeType || '').toLowerCase();

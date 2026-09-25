@@ -397,6 +397,23 @@ export class Store {
     return path.join(this.filesDir, file.userId, file.id);
   }
 
+  findFileById(id, includeDeleted = false) {
+    return this.data.files.find((file) => file.id === id && (includeDeleted || !file.deletedAt)) || null;
+  }
+
+  async replaceFileContent(fileId, buffer) {
+    const file = this.findFileById(fileId);
+    if (!file || file.isDirectory) throw new Error('FILE_NOT_FOUND');
+    const filePath = this.pathFor(file);
+    const tempPath = `${filePath}.tmp-${crypto.randomBytes(8).toString('hex')}`;
+    await fs.writeFile(tempPath, buffer);
+    await fs.rename(tempPath, filePath);
+    file.size = buffer.length;
+    file.updatedAt = new Date().toISOString();
+    await this.persist();
+    return file;
+  }
+
   async createFolder(userId, name, parentId = null) {
     this.validateName(name);
     this.assertParent(userId, parentId);

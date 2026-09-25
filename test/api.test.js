@@ -1,13 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
+import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { createServer } from '../src/server.js';
 
 async function boot(options = {}) {
   const root = options.dataRoot || await fs.mkdtemp(path.join(os.tmpdir(), 'cloudirve-'));
-  const server = createServer({ dataRoot: root });
+  const { dataRoot: ignoredDataRoot, ...serverOptions } = options;
+  const server = createServer({ dataRoot: root, ...serverOptions });
   await server.store.init();
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   return { root, server, base: `http://127.0.0.1:${server.address().port}` };
@@ -447,6 +449,57 @@ test('TOTP 两步验证：开启、登录挑战、备用码一次性消费与关
   const activity = await request(context.base, '/api/activity', {}, result.cookie);
   assert.ok(activity.result.entries.some((entry) => entry.action === 'totp-enable'));
   assert.ok(activity.result.entries.some((entry) => entry.action === 'totp-disable'));
+});
+
+test('OnlyOffice 集成默认关闭且启用后完成配置、签名内容访问与回调保存', async (t) => {
+  const context = await boot();
+  t.after(() => context.server.close());
+  const cookie = await login(context.base);
+  let result = await request(context.base, '/api/office/status', {}, cookie);
+  assert.deepEqual(result.result, { enabled: false, url: null });
+  const form = new FormData(); form.append('parentId', ''); form.append('file', new Blob(['before edit'], { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' }), 'note.docx');
+  result = await request(context.base, '/api/files/upload', { method: 'POST', body: form }, cookie);
+  const fileId = result.result.file.id;
+  result = await request(context.base, `/api/office/files/${fileId}/config`, {}, cookie);
+  assert.equal(result.response.status, 404);
+
+  const downloadServer = http.createServer((req, res) => { res.writeHead(200, { 'Content-Type': 'application/octet-stream' }); res.end('after edit'); });
+  await new Promise((resolve) => downloadServer.listen(0, '127.0.0.1', resolve));
+  t.after(() => downloadServer.close());
+  const officeDownloadUrl = `http://127.0.0.1:${downloadServer.address().port}`;
+  const enabled = await boot({ officeEnabled: true, officeUrl: officeDownloadUrl, officePublicUrl: 'http://office.local', officeSecret: 'test-office-secret' });
+  t.after(() => enabled.server.close());
+  const enabledCookie = await login(enabled.base);
+  const enabledForm = new FormData(); enabledForm.append('parentId', ''); enabledForm.append('file', new Blob(['before edit'], { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' }), 'note.docx');
+  result = await request(enabled.base, '/api/files/upload', { method: 'POST', body: enabledForm }, enabledCookie);
+  const enabledFileId = result.result.file.id;
+  result = await request(enabled.base, '/api/office/status', {}, enabledCookie);
+  assert.deepEqual(result.result, { enabled: true, url: 'http://office.local' });
+  result = await request(enabled.base, `/api/office/files/${enabledFileId}/config`, {}, enabledCookie);
+  assert.equal(result.response.status, 200);
+  assert.equal(result.result.editorUrl, 'http://office.local');
+  assert.equal(result.result.config.document.fileType, 'docx');
+  assert.equal(result.result.config.documentType, 'text');
+  assert.match(result.result.config.token, /^[\w-]+\.[\w-]+\.[\w-]+$/);
+  const contentUrl = new URL(result.result.config.document.url);
+  const callbackUrl = new URL(result.result.config.editorConfig.callbackUrl);
+  let content = await fetch(contentUrl);
+  assert.equal(content.status, 200);
+  assert.equal(await content.text(), 'before edit');
+  const tamperedUrl = new URL(contentUrl);
+  tamperedUrl.searchParams.set('token', 'bad');
+  content = await fetch(tamperedUrl);
+  assert.equal(content.status, 401);
+  const callbackBody = JSON.stringify({ status: 2, url: 'http://127.0.0.1:9/edited.docx' });
+  const officeToken = callbackUrl.searchParams.get('token');
+  const officeJwt = (await import('../src/office.js')).signOfficeToken({ purpose: 'office-outbox' }, 'test-office-secret', 300);
+  result = await request(enabled.base, callbackUrl.pathname + callbackUrl.search, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${officeJwt}` }, body: callbackBody });
+  assert.equal(result.response.status, 400);
+  const downloadUrl = `${officeDownloadUrl}/edited.docx`;
+  result = await request(enabled.base, `${callbackUrl.pathname}?token=${encodeURIComponent(officeToken)}`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${officeJwt}` }, body: JSON.stringify({ status: 2, url: downloadUrl }) });
+  assert.equal(result.response.status, 200);
+  const saved = await fetch(`${enabled.base}/api/files/${enabledFileId}/download`, { headers: { Cookie: enabledCookie } });
+  assert.equal(await saved.text(), 'after edit');
 });
 
 test('用户 A 无法读取、修改或删除用户 B 的文件', async (t) => {

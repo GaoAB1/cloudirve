@@ -8,7 +8,25 @@ services:
     environment:
       HOST: 0.0.0.0
       PORT: 4173
+      OFFICE_ENABLED: ${OFFICE_ENABLED:-0}
+      OFFICE_URL: ${OFFICE_URL:-http://office}
+      OFFICE_PUBLIC_URL: ${OFFICE_PUBLIC_URL:-http://127.0.0.1:8080}
+      OFFICE_CALLBACK_ORIGIN: ${OFFICE_CALLBACK_ORIGIN:-http://cloudirve:4173}
+      OFFICE_JWT_SECRET: ${OFFICE_JWT_SECRET:-}
     volumes:
       # 元数据与文件持久化目录；NAS 部署建议保持 bind mount 便于直接备份
       - ./data:/app/data
     restart: unless-stopped
+
+  office:
+    image: onlyoffice/documentserver:latest
+    container_name: cloudirve-office
+    profiles: ["office"]
+    environment:
+      JWT_ENABLED: ${OFFICE_ENABLED:-false}
+      JWT_SECRET: ${OFFICE_JWT_SECRET:-}
+      JWT_HEADER: Authorization
+    ports:
+      - "8080:80"
+    restart: unless-stopped
+    mem_limit: 4g
