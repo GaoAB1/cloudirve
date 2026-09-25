@@ -53,5 +53,7 @@ export function officeFileType(name) {
 
 export function officeConfigToken(config, secret) {
   const { token: ignoredToken, ...unsignedConfig } = config;
-  return signOfficeToken({ purpose: 'office-config', ...unsignedConfig }, secret, 10 * 60);
+  // OnlyOffice 官方约定：浏览器配置令牌的 payload 必须是 { payload: <完整配置> }，
+  // DS 7.2+ 启用 JWT 后以令牌内的 payload 为权威配置来源（含 callbackUrl/document.url）
+  return signOfficeToken({ payload: unsignedConfig }, secret, 10 * 60);
 }

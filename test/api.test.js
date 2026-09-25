@@ -489,6 +489,11 @@ test('OnlyOffice 集成默认关闭且启用后完成配置、签名内容访问
   assert.equal(result.result.config.editorConfig.customization.autosave, true);
   assert.equal(result.result.config.editorConfig.customization.forcesave, true);
   assert.match(result.result.config.token, /^[\w-]+\.[\w-]+\.[\w-]+$/);
+  // 配置令牌必须符合 OnlyOffice 官方结构：payload 内嵌完整配置
+  const [, configTokenBody] = result.result.config.token.split('.');
+  const configTokenPayload = JSON.parse(Buffer.from(configTokenBody, 'base64url').toString('utf8'));
+  assert.equal(configTokenPayload.payload.document.fileType, 'docx');
+  assert.match(configTokenPayload.payload.editorConfig.callbackUrl, /\/callback\?token=/);
   const contentUrl = new URL(result.result.config.document.url);
   const callbackUrl = new URL(result.result.config.editorConfig.callbackUrl);
   let content = await fetch(contentUrl);

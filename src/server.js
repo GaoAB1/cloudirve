@@ -99,12 +99,27 @@ async function handleApi(req, res, store, office) {
     const callbackToken = url.searchParams.get('token');
     const payload = verifyOfficeToken(callbackToken, office.secret, 'office-callback');
     if (payload.fileId !== officeCallbackMatch[1]) throw new Error('OFFICE_TOKEN_INVALID');
-    const body = await readJson(req);
-    const officeJwt = body.token || String(req.headers.authorization || '').replace(/^Bearer\s+/i, '');
-    if (!officeJwt) throw new Error('OFFICE_CALLBACK_INVALID');
-    // DS 自己签发的 outbox JWT 没有（也不会有）自定义 purpose 声明，凭共享密钥签名 + 有效期验证即可；
-    // purpose 约束只适用于主应用自己签发的 office-file / office-callback 等令牌
-    verifyOfficeToken(officeJwt, office.secret, null);
+    let body;
+    try {
+      body = await readJson(req);
+    } catch (error) {
+      console.error(`office callback rejected: unreadable body (file=${payload.fileId})`);
+      throw error;
+    }
+    const authHeader = String(req.headers.authorization || '');
+    const officeJwt = body.token || authHeader.replace(/^Bearer\s+/i, '');
+    if (!officeJwt) {
+      console.error(`office callback rejected: no JWT (file=${payload.fileId} status=${body.status} authHeader=${authHeader ? 'present' : 'absent'})`);
+      throw new Error('OFFICE_CALLBACK_INVALID');
+    }
+    try {
+      // DS 自己签发的 outbox JWT 没有（也不会有）自定义 purpose 声明，凭共享密钥签名 + 有效期验证即可；
+      // purpose 约束只适用于主应用自己签发的 office-file / office-callback 等令牌
+      verifyOfficeToken(officeJwt, office.secret, null);
+    } catch (error) {
+      console.error(`office callback rejected: JWT invalid (file=${payload.fileId} status=${body.status})`);
+      throw error;
+    }
     if (Number(body.status) === 2 || Number(body.status) === 6) {
       if (!body.url || !isAllowedOfficeUrl(body.url, [office.url, office.publicUrl].filter(Boolean))) throw new Error('OFFICE_CALLBACK_INVALID');
       const fetchToken = signOfficeToken({ purpose: 'office-fetch', fileId: payload.fileId }, office.secret, 300);
