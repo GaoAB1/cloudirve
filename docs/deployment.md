@@ -77,8 +77,8 @@ cp .env.example .env
 #    OFFICE_ENABLED=1
 #    OFFICE_JWT_SECRET=<node -e "console.log(require('crypto').randomBytes(32).toString('hex'))" 生成>
 #    OFFICE_PUBLIC_URL=http://<NAS局域网IP>:8080
-# 3. 启动（--profile office 会同时拉起 Document Server）
-docker compose --profile office up -d --build
+# 3. 启动（office 服务随 compose 一起启动，无需 profile 参数）
+docker compose up -d --build
 ```
 
 三个地址变量的取值规则：
@@ -89,7 +89,9 @@ docker compose --profile office up -d --build
 | `OFFICE_PUBLIC_URL` | 浏览器 → Document Server | 浏览器可达地址：局域网 `http://<NAS IP>:8080`；公网反代 `https://office.example.com` |
 | `OFFICE_CALLBACK_ORIGIN` | Document Server → Cloudirve | DS 容器可达地址；同一 compose 网络保持默认 `http://cloudirve:4173`；跨机部署改为 DS 可访问的主应用地址 |
 
-JWT 约束：`OFFICE_JWT_SECRET` 会同时注入两端（compose 中 Document Server 的 `JWT_ENABLED` 已绑定 `OFFICE_ENABLED`），两端必须一致，否则编辑器无法加载或保存回调 401。修改 `.env` 后需 `docker compose --profile office up -d` 重建容器生效。
+JWT 约束：`OFFICE_JWT_SECRET` 会同时注入两端（compose 中 Document Server 的 `JWT_ENABLED` 已绑定 `OFFICE_ENABLED`），两端必须一致，否则编辑器无法加载或保存回调 401。修改 `.env` 后需 `docker compose up -d` 重建容器生效。
+
+> **不想运行 Document Server？** office 服务默认随 `docker compose up -d` 启动（约 1.5GB 内存）。只用主应用时执行 `docker compose up -d cloudirve` 只启动主应用，或用 `docker compose stop office` 停掉已运行的 DS。
 
 支持的编辑类型：doc/docx/odt/rtf/txt、xls/xlsx/ods/csv、ppt/pptx/odp 等；文件操作菜单出现「在线编辑」按钮即集成成功，保存后操作日志记录「在线编辑保存」。
 

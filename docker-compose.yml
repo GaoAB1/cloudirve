@@ -21,7 +21,6 @@ services:
   office:
     image: onlyoffice/documentserver:latest
     container_name: cloudirve-office
-    profiles: ["office"]
     environment:
       JWT_ENABLED: ${OFFICE_ENABLED:-false}
       JWT_SECRET: ${OFFICE_JWT_SECRET:-}
