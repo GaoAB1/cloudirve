@@ -479,6 +479,7 @@ test('OnlyOffice 集成默认关闭且启用后完成配置、签名内容访问
   assert.equal(result.response.status, 200);
   assert.equal(result.result.editorUrl, 'http://office.local');
   assert.equal(result.result.config.document.fileType, 'docx');
+  assert.equal(result.result.config.document.permissions.edit, true);
   assert.equal(result.result.config.documentType, 'text');
   assert.match(result.result.config.token, /^[\w-]+\.[\w-]+\.[\w-]+$/);
   const contentUrl = new URL(result.result.config.document.url);
