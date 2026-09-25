@@ -25,6 +25,8 @@ services:
       JWT_ENABLED: ${OFFICE_ENABLED:-false}
       JWT_SECRET: ${OFFICE_JWT_SECRET:-}
       JWT_HEADER: Authorization
+      # compose 内 DS 通过私有网络地址回调主应用（http://cloudirve:4173），必须允许私有 IP
+      ALLOW_PRIVATE_IP_ADDRESS: "true"
     ports:
       - "8080:80"
     restart: unless-stopped

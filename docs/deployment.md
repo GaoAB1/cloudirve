@@ -205,6 +205,8 @@ docker start cloudirve-drive
 | 编辑器打开后空白/加载失败 | 浏览器能否直接访问 `OFFICE_PUBLIC_URL`；DS 是否启动完成（首次约 1–2 分钟），`docker logs cloudirve-office` |
 | 编辑保存不生效 | 检查 `OFFICE_CALLBACK_ORIGIN` 是否为 DS 容器可达地址；两端 JWT 密钥是否一致；回调日志是否 401/400 |
 | 上传 413 | 反代 `client_max_body_size` 小于 25MB；或触发每用户配额（`STORAGE_QUOTA_BYTES`） |
+| DS 日志报 `DNS lookup ... is not allowed. Because, It is private IP address` | DS 默认禁止访问私有 IP；compose 已内置 `ALLOW_PRIVATE_IP_ADDRESS=true`，自行独立部署 DS 时需在容器环境变量中手动开启，否则回调保存和文档拉取都会被拦截 |
+| 编辑器提示「没有权限」/ 保存失败 | 查 DS 日志：`unexpected key` 多为 document key 含非法字符（只允许 `0-9-.a-zA-Z_=`）；`JWT`/`token` 报错检查两端密钥；`private IP` 报错见上一条 |
 | 登录提示验证已过期 | TOTP 登录挑战 5 分钟有效，过期重新输入密码即可 |
 | 忘记密码 | 管理员可在用户管理重置；管理员本人遗忘需从 `data/metadata.json` 恢复备份或重置密码哈希 |
 
