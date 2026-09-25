@@ -102,7 +102,9 @@ async function handleApi(req, res, store, office) {
     const body = await readJson(req);
     const officeJwt = body.token || String(req.headers.authorization || '').replace(/^Bearer\s+/i, '');
     if (!officeJwt) throw new Error('OFFICE_CALLBACK_INVALID');
-    verifyOfficeToken(officeJwt, office.secret, 'office-outbox');
+    // DS 自己签发的 outbox JWT 没有（也不会有）自定义 purpose 声明，凭共享密钥签名 + 有效期验证即可；
+    // purpose 约束只适用于主应用自己签发的 office-file / office-callback 等令牌
+    verifyOfficeToken(officeJwt, office.secret, null);
     if (Number(body.status) === 2 || Number(body.status) === 6) {
       if (!body.url || !isAllowedOfficeUrl(body.url, [office.url, office.publicUrl].filter(Boolean))) throw new Error('OFFICE_CALLBACK_INVALID');
       const fetchToken = signOfficeToken({ purpose: 'office-fetch', fileId: payload.fileId }, office.secret, 300);

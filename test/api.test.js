@@ -508,17 +508,25 @@ test('OnlyOffice 集成默认关闭且启用后完成配置、签名内容访问
   assert.equal(content.status, 200);
   assert.equal(content.headers.get('x-truncated'), null);
   assert.equal(await content.text(), bigText);
-  const callbackBody = JSON.stringify({ status: 2, url: 'http://127.0.0.1:9/edited.docx' });
   const officeToken = callbackUrl.searchParams.get('token');
-  const officeJwt = (await import('../src/office.js')).signOfficeToken({ purpose: 'office-outbox' }, 'test-office-secret', 300);
-  result = await request(enabled.base, callbackUrl.pathname + callbackUrl.search, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${officeJwt}` }, body: callbackBody });
+  const { signOfficeToken } = await import('../src/office.js');
+  // 模拟真实 DS：outbox JWT 的 payload 是 { payload: <请求体> }，没有自定义 purpose 声明
+  const dsJwt = (payloadBody) => signOfficeToken({ payload: payloadBody }, 'test-office-secret', 300);
+  // status=1/4 连接通知必须返回 200（purpose 校验过严时它们会全部 400，进而让 DS 判定回调不可用）
+  result = await request(enabled.base, `${callbackUrl.pathname}?token=${encodeURIComponent(officeToken)}`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${dsJwt({ status: 1, users: ['user-demo'], actions: [] })}` }, body: JSON.stringify({ status: 1, users: ['user-demo'], actions: [] }) });
+  assert.equal(result.response.status, 200);
+  // 密钥不符的 JWT 必须拒绝
+  result = await request(enabled.base, `${callbackUrl.pathname}?token=${encodeURIComponent(officeToken)}`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${signOfficeToken({ payload: { status: 2, url: `${officeDownloadUrl}/edited.docx` } }, 'wrong-secret', 300)}` }, body: JSON.stringify({ status: 2, url: `${officeDownloadUrl}/edited.docx` }) });
+  assert.equal(result.response.status, 401);
+  // 非法下载地址仍拒绝
+  result = await request(enabled.base, `${callbackUrl.pathname}?token=${encodeURIComponent(officeToken)}`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${dsJwt({ status: 2, url: 'http://127.0.0.1:9/edited.docx' })}` }, body: JSON.stringify({ status: 2, url: 'http://127.0.0.1:9/edited.docx' }) });
   assert.equal(result.response.status, 400);
   // DS 生成下载链接的 host 可能是内部地址，也可能是浏览器访问的公开地址，两者都必须允许保存
-  result = await request(enabled.base, `${callbackUrl.pathname}?token=${encodeURIComponent(officeToken)}`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${officeJwt}` }, body: JSON.stringify({ status: 2, url: `${officeDownloadUrl}/edited.docx` }) });
+  result = await request(enabled.base, `${callbackUrl.pathname}?token=${encodeURIComponent(officeToken)}`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${dsJwt({ status: 2, url: `${officeDownloadUrl}/edited.docx` })}` }, body: JSON.stringify({ status: 2, url: `${officeDownloadUrl}/edited.docx` }) });
   assert.equal(result.response.status, 200);
   const saved = await fetch(`${enabled.base}/api/files/${enabledFileId}/download`, { headers: { Cookie: enabledCookie } });
   assert.equal(await saved.text(), 'after edit');
-  result = await request(enabled.base, `${callbackUrl.pathname}?token=${encodeURIComponent(officeToken)}`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${officeJwt}` }, body: JSON.stringify({ status: 6, url: `${officePublicDownloadUrl}/edited.docx` }) });
+  result = await request(enabled.base, `${callbackUrl.pathname}?token=${encodeURIComponent(officeToken)}`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${dsJwt({ status: 6, url: `${officePublicDownloadUrl}/edited.docx` })}` }, body: JSON.stringify({ status: 6, url: `${officePublicDownloadUrl}/edited.docx` }) });
   assert.equal(result.response.status, 200);
   const savedPublic = await fetch(`${enabled.base}/api/files/${enabledFileId}/download`, { headers: { Cookie: enabledCookie } });
   assert.equal(await savedPublic.text(), 'public edit');
