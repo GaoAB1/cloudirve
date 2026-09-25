@@ -133,7 +133,7 @@ async function handleApi(req, res, store, office) {
     const fileToken = signOfficeToken({ purpose: 'office-file', fileId: file.id, userId: user.id }, office.secret, 10 * 60);
     const callbackToken = signOfficeToken({ purpose: 'office-callback', fileId: file.id, userId: user.id }, office.secret, 30 * 60);
     const config = {
-      document: { fileType: type.extension, key: `${file.id}-${file.updatedAt}`, title: file.name, url: `${office.callbackOrigin || originFor(req)}/api/office/files/${file.id}/content?token=${encodeURIComponent(fileToken)}`, permissions: { edit: true, download: true, print: true, copy: true } },
+      document: { fileType: type.extension, key: `${file.id}-${new Date(file.updatedAt).getTime()}`, title: file.name, url: `${office.callbackOrigin || originFor(req)}/api/office/files/${file.id}/content?token=${encodeURIComponent(fileToken)}`, permissions: { edit: true, download: true, print: true, copy: true } },
       documentType: type.documentType,
       editorConfig: { callbackUrl: `${office.callbackOrigin || originFor(req)}/api/office/files/${file.id}/callback?token=${encodeURIComponent(callbackToken)}`, mode: 'edit', lang: 'zh-CN', user: { id: user.id, name: user.username } },
       height: '100%',
