@@ -17,7 +17,7 @@ export function createServer({ dataRoot = path.join(__dirname, '..') } = {}) {
       if (req.url.startsWith('/api/')) await handleApi(req, res, store);
       else await serveStatic(req, res);
     } catch (error) {
-      const known = { AUTH_REQUIRED: [401, '请先登录'], AUTH_DISABLED: [403, '账号已被禁用'], FORBIDDEN: [403, '无权限执行此操作'], LAST_ADMIN: [403, '至少需要保留一个可用的管理员'], INVALID_CREDENTIALS: [401, '用户名或密码错误'], INVALID_JSON: [400, '请求格式错误'], INVALID_NAME: [400, '名称不合法'], INVALID_USERNAME: [400, '用户名需为 1-32 位且不含空格'], INVALID_PASSWORD: [400, '密码需为 6-128 位'], INVALID_DAYS: [400, '有效期需为 1-365 天'], DUPLICATE_NAME: [409, '当前目录已存在同名项目'], PARENT_NOT_FOUND: [404, '目标目录不存在'], FILE_NOT_FOUND: [404, '文件不存在或已被删除'], FILE_TOO_LARGE: [413, '文件超过 25 MB 限制'], QUOTA_EXCEEDED: [413, '存储空间不足，请清理后再试'], UPLOAD_REQUIRED: [400, '请选择要上传的文件'], SHARE_NOT_FOUND: [404, '分享不存在或已失效'], SHARE_PASSWORD_REQUIRED: [401, '此分享需要密码'], SHARE_PASSWORD_INVALID: [401, '分享密码错误'] }[error.message];
+      const known = { AUTH_REQUIRED: [401, '请先登录'], AUTH_DISABLED: [403, '账号已被禁用'], FORBIDDEN: [403, '无权限执行此操作'], LAST_ADMIN: [403, '至少需要保留一个可用的管理员'], INVALID_CREDENTIALS: [401, '用户名或密码错误'], INVALID_JSON: [400, '请求格式错误'], INVALID_NAME: [400, '名称不合法'], INVALID_USERNAME: [400, '用户名需为 1-32 位且不含空格'], INVALID_PASSWORD: [400, '密码需为 6-128 位'], INVALID_DAYS: [400, '有效期需为 1-365 天'], DUPLICATE_NAME: [409, '当前目录已存在同名项目'], PARENT_NOT_FOUND: [404, '目标目录不存在'], FILE_NOT_FOUND: [404, '文件不存在或已被删除'], FILE_TOO_LARGE: [413, '文件超过 25 MB 限制'], QUOTA_EXCEEDED: [413, '存储空间不足，请清理后再试'], UPLOAD_REQUIRED: [400, '请选择要上传的文件'], SHARE_NOT_FOUND: [404, '分享不存在或已失效'], SHARE_PASSWORD_REQUIRED: [401, '此分享需要密码'], SHARE_PASSWORD_INVALID: [401, '分享密码错误'], TOTP_INVALID: [401, '验证码或备用码错误'], TOTP_CHALLENGE_INVALID: [401, '验证已过期，请重新登录'], TOTP_ALREADY_ENABLED: [409, '两步验证已开启'], TOTP_SETUP_REQUIRED: [400, '请先开始两步验证设置'], TOTP_NOT_ENABLED: [400, '两步验证尚未开启'] }[error.message];
       if (known) return sendJson(res, known[0], { error: { code: error.message, message: known[1] } });
       console.error(error);
       sendJson(res, 500, { error: { code: 'INTERNAL_ERROR', message: '服务暂时不可用，请稍后重试' } });
@@ -55,13 +55,21 @@ async function handleApi(req, res, store) {
       throw new Error('INVALID_CREDENTIALS');
     }
     if (store.data.users.find((item) => item.id === result.user.id)?.disabled) {
-      delete store.data.sessions[result.token];
       await store.logActivity(result.user.id, 'login', body.username, 'failed');
       throw new Error('AUTH_DISABLED');
     }
+    if (result.requiresTotp) return sendJson(res, 200, { needTotp: true, challengeToken: result.challengeToken, user: result.user });
     await store.logActivity(result.user.id, 'login', body.username);
     res.setHeader('Set-Cookie', `cloudirve_session=${result.token}; HttpOnly; Path=/; SameSite=Strict`);
     return sendJson(res, 200, { user: result.user, sessionExpiresAt: result.sessionExpiresAt });
+  }
+  if (req.method === 'POST' && url.pathname === '/api/auth/totp/verify') {
+    const body = await readJson(req);
+    const result = store.verifyTotpChallenge(body.challengeToken, body.code);
+    await store.persist();
+    await store.logActivity(result.user.id, 'totp-verify', result.usedBackupCode ? '备用码' : '验证码');
+    res.setHeader('Set-Cookie', `cloudirve_session=${result.token}; HttpOnly; Path=/; SameSite=Strict`);
+    return sendJson(res, 200, { user: result.user, sessionExpiresAt: result.sessionExpiresAt, usedBackupCode: result.usedBackupCode });
   }
   if (req.method === 'POST' && url.pathname === '/api/auth/logout') {
     const token = parseCookies(req.headers.cookie).cloudirve_session;
@@ -103,6 +111,27 @@ async function handleApi(req, res, store) {
 
   if (req.method === 'GET' && url.pathname === '/api/storage') return sendJson(res, 200, store.storageStats(user.id));
   if (req.method === 'GET' && url.pathname === '/api/activity') return sendJson(res, 200, { entries: store.listActivity(user.id) });
+  if (req.method === 'GET' && url.pathname === '/api/auth/totp/status') return sendJson(res, 200, store.totpStatus(user.id));
+  if (req.method === 'POST' && url.pathname === '/api/auth/totp/setup') {
+    const result = store.setupTotp(user.id);
+    await store.persist();
+    await store.logActivity(user.id, 'totp-setup', '生成验证器配置');
+    return sendJson(res, 200, result);
+  }
+  if (req.method === 'POST' && url.pathname === '/api/auth/totp/confirm') {
+    const body = await readJson(req);
+    const result = store.confirmTotp(user.id, body.code);
+    await store.persist();
+    await store.logActivity(user.id, 'totp-enable', '开启两步验证');
+    return sendJson(res, 200, result);
+  }
+  if (req.method === 'POST' && url.pathname === '/api/auth/totp/disable') {
+    const body = await readJson(req);
+    store.disableTotp(user.id, body.code);
+    await store.persist();
+    await store.logActivity(user.id, 'totp-disable', '关闭两步验证');
+    return sendJson(res, 200, { ok: true });
+  }
   if (req.method === 'PATCH' && url.pathname === '/api/auth/password') {
     const body = await readJson(req);
     await store.changePassword(user.id, body.currentPassword, body.newPassword);

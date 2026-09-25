@@ -408,6 +408,47 @@ test('管理员用户管理：创建、重置密码、禁用、删除与保护�
   assert.equal(result.response.status, 403);
 });
 
+test('TOTP 两步验证：开启、登录挑战、备用码一次性消费与关闭', async (t) => {
+  const context = await boot();
+  t.after(() => context.server.close());
+  const { generateTotpCode } = await import('../src/store.js');
+  const cookie = await login(context.base);
+  let result = await request(context.base, '/api/auth/totp/status', {}, cookie);
+  assert.deepEqual(result.result, { enabled: false, remainingBackupCodes: 0 });
+  result = await request(context.base, '/api/auth/totp/setup', { method: 'POST' }, cookie);
+  assert.equal(result.response.status, 200);
+  assert.match(result.result.otpauth, /^otpauth:\/\/totp\/Cloudirve:/);
+  const secret = result.result.secret;
+  result = await request(context.base, '/api/auth/totp/confirm', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ code: '000000' }) }, cookie);
+  assert.equal(result.response.status, 401);
+  result = await request(context.base, '/api/auth/totp/confirm', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ code: generateTotpCode(secret) }) }, cookie);
+  assert.equal(result.response.status, 200);
+  assert.equal(result.result.backupCodes.length, 10);
+  const persistedUser = context.server.store.data.users.find((user) => user.username === 'demo');
+  assert.ok(persistedUser.totp.backupCodeHashes.every((hash) => hash.startsWith('scrypt$')));
+  const backupCode = result.result.backupCodes[0];
+  result = await request(context.base, '/api/auth/totp/status', {}, cookie);
+  assert.deepEqual(result.result, { enabled: true, remainingBackupCodes: 10 });
+  result = await request(context.base, '/api/auth/logout', { method: 'POST' }, cookie);
+  assert.equal(result.response.status, 200);
+  result = await request(context.base, '/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: 'demo', password: 'cloudirve' }) });
+  assert.equal(result.response.status, 200);
+  assert.equal(result.result.needTotp, true);
+  const challengeToken = result.result.challengeToken;
+  result = await request(context.base, '/api/auth/totp/verify', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ challengeToken, code: backupCode }) });
+  assert.equal(result.response.status, 200);
+  assert.equal(result.result.usedBackupCode, true);
+  const secondUse = await request(context.base, '/api/auth/totp/verify', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ challengeToken, code: backupCode }) });
+  assert.equal(secondUse.response.status, 401);
+  result = await request(context.base, '/api/auth/totp/disable', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ code: generateTotpCode(secret) }) }, result.cookie);
+  assert.equal(result.response.status, 200);
+  result = await request(context.base, '/api/auth/totp/status', {}, result.cookie);
+  assert.deepEqual(result.result, { enabled: false, remainingBackupCodes: 0 });
+  const activity = await request(context.base, '/api/activity', {}, result.cookie);
+  assert.ok(activity.result.entries.some((entry) => entry.action === 'totp-enable'));
+  assert.ok(activity.result.entries.some((entry) => entry.action === 'totp-disable'));
+});
+
 test('用户 A 无法读取、修改或删除用户 B 的文件', async (t) => {
   const context = await boot();
   t.after(() => context.server.close());

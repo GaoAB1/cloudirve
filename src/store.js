@@ -21,6 +21,86 @@ function verifyPassword(password, encoded) {
   return expectedBuffer.length === actual.length && crypto.timingSafeEqual(actual, expectedBuffer);
 }
 
+const BASE32_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+
+function base32Encode(buffer) {
+  let bits = 0;
+  let value = 0;
+  let output = '';
+  for (const byte of buffer) {
+    value = (value << 8) | byte;
+    bits += 8;
+    while (bits >= 5) {
+      output += BASE32_ALPHABET[(value >>> (bits - 5)) & 31];
+      bits -= 5;
+    }
+  }
+  if (bits > 0) output += BASE32_ALPHABET[(value << (5 - bits)) & 31];
+  return output;
+}
+
+function base32Decode(value) {
+  const normalized = String(value || '').toUpperCase().replace(/=+$/g, '').replace(/\s+/g, '');
+  let bits = 0;
+  let current = 0;
+  const output = [];
+  for (const char of normalized) {
+    const index = BASE32_ALPHABET.indexOf(char);
+    if (index < 0) throw new Error('INVALID_TOTP_SECRET');
+    current = (current << 5) | index;
+    bits += 5;
+    if (bits >= 8) {
+      output.push((current >>> (bits - 8)) & 255);
+      bits -= 8;
+    }
+  }
+  return Buffer.from(output);
+}
+
+function totpCode(secret, counter) {
+  const key = base32Decode(secret);
+  const buffer = Buffer.alloc(8);
+  buffer.writeBigUInt64BE(BigInt(counter));
+  const digest = crypto.createHmac('sha1', key).update(buffer).digest();
+  const offset = digest[digest.length - 1] & 15;
+  const number = ((digest[offset] & 127) << 24) | (digest[offset + 1] << 16) | (digest[offset + 2] << 8) | digest[offset + 3];
+  return String(number % 1_000_000).padStart(6, '0');
+}
+
+function normalizeTotpCode(code) {
+  return String(code || '').trim().replace(/\s+/g, '');
+}
+
+function verifyTotpCode(secret, code, now = Date.now()) {
+  const normalized = normalizeTotpCode(code);
+  if (!/^\d{6}$/.test(normalized)) return false;
+  const counter = Math.floor(now / 1000 / 30);
+  for (const offset of [-1, 0, 1]) {
+    if (crypto.timingSafeEqual(Buffer.from(totpCode(secret, counter + offset)), Buffer.from(normalized))) return true;
+  }
+  return false;
+}
+
+function generateBackupCodes() {
+  return Array.from({ length: 10 }, () => crypto.randomBytes(5).toString('hex').toUpperCase());
+}
+
+function hashBackupCode(code) {
+  return hashPassword(String(code));
+}
+
+export function createTotpSecret() {
+  return base32Encode(crypto.randomBytes(20));
+}
+
+export function verifyTotp(secret, code, now) {
+  return verifyTotpCode(secret, code, now);
+}
+
+export function generateTotpCode(secret, now = Date.now()) {
+  return totpCode(secret, Math.floor(now / 1000 / 30));
+}
+
 export class Store {
   constructor(rootDir) {
     this.rootDir = rootDir;
@@ -50,6 +130,7 @@ export class Store {
     if (!Array.isArray(this.data.shares)) this.data.shares = [];
     if (!this.data.sessions || typeof this.data.sessions !== 'object') this.data.sessions = {};
     if (!Array.isArray(this.data.activityLog)) this.data.activityLog = [];
+    if (!this.totpChallenges) this.totpChallenges = new Map();
     if (!this.data.users.some((user) => user.role === 'admin')) this.data.users[0].role = 'admin';
     for (const user of this.data.users) {
       if (!user.role) user.role = 'member';
@@ -97,9 +178,70 @@ export class Store {
   authenticate(username, password) {
     const user = this.data.users.find((item) => item.username === username && verifyPassword(password, item.passwordHash));
     if (!user) return null;
+    if (user.totp?.enabled) {
+      const challengeToken = crypto.randomBytes(24).toString('hex');
+      this.totpChallenges.set(challengeToken, { userId: user.id, expiresAt: Date.now() + 5 * 60 * 1000 });
+      return { requiresTotp: true, challengeToken, user: { id: user.id, username: user.username, role: user.role } };
+    }
+    return this.createSession(user);
+  }
+
+  createSession(user) {
     const token = crypto.randomBytes(24).toString('hex');
     this.data.sessions[token] = { userId: user.id, expiresAt: new Date(Date.now() + this.sessionTtlDays * 24 * 60 * 60 * 1000).toISOString() };
     return { token, user: { id: user.id, username: user.username, role: user.role }, sessionExpiresAt: this.data.sessions[token].expiresAt };
+  }
+
+  verifyTotpChallenge(challengeToken, code) {
+    const challenge = this.totpChallenges.get(challengeToken);
+    if (!challenge || challenge.expiresAt <= Date.now()) {
+      this.totpChallenges.delete(challengeToken);
+      throw new Error('TOTP_CHALLENGE_INVALID');
+    }
+    const user = this.data.users.find((item) => item.id === challenge.userId);
+    if (!user || user.disabled || !user.totp?.enabled) throw new Error('INVALID_CREDENTIALS');
+    let valid = verifyTotpCode(user.totp.secret, code);
+    let backupIndex = -1;
+    if (!valid) {
+      backupIndex = (user.totp.backupCodeHashes || []).findIndex((hash) => verifyPassword(normalizeTotpCode(code).toUpperCase(), hash));
+      valid = backupIndex >= 0;
+    }
+    if (!valid) throw new Error('TOTP_INVALID');
+    if (backupIndex >= 0) user.totp.backupCodeHashes.splice(backupIndex, 1);
+    this.totpChallenges.delete(challengeToken);
+    return { ...this.createSession(user), usedBackupCode: backupIndex >= 0 };
+  }
+
+  setupTotp(userId) {
+    const user = this.data.users.find((item) => item.id === userId);
+    if (!user) throw new Error('AUTH_REQUIRED');
+    if (user.totp?.enabled) throw new Error('TOTP_ALREADY_ENABLED');
+    const secret = createTotpSecret();
+    user.totp = { secret, enabled: false, confirmed: false, backupCodeHashes: [] };
+    return { secret, otpauth: `otpauth://totp/Cloudirve:${encodeURIComponent(user.username)}?secret=${secret}&issuer=Cloudirve` };
+  }
+
+  confirmTotp(userId, code) {
+    const user = this.data.users.find((item) => item.id === userId);
+    if (!user?.totp?.secret || user.totp.enabled) throw new Error('TOTP_SETUP_REQUIRED');
+    if (!verifyTotpCode(user.totp.secret, code)) throw new Error('TOTP_INVALID');
+    const backupCodes = generateBackupCodes();
+    user.totp.enabled = true;
+    user.totp.confirmed = true;
+    user.totp.backupCodeHashes = backupCodes.map(hashBackupCode);
+    return { backupCodes };
+  }
+
+  disableTotp(userId, code) {
+    const user = this.data.users.find((item) => item.id === userId);
+    if (!user?.totp?.enabled) throw new Error('TOTP_NOT_ENABLED');
+    if (!verifyTotpCode(user.totp.secret, code)) throw new Error('TOTP_INVALID');
+    delete user.totp;
+  }
+
+  totpStatus(userId) {
+    const user = this.data.users.find((item) => item.id === userId);
+    return { enabled: !!user?.totp?.enabled, remainingBackupCodes: user?.totp?.backupCodeHashes?.length || 0 };
   }
 
   userFromToken(token) {
