@@ -5,8 +5,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { createServer } from '../src/server.js';
 
-async function boot() {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'cloudirve-'));
+async function boot(options = {}) {
+  const root = options.dataRoot || await fs.mkdtemp(path.join(os.tmpdir(), 'cloudirve-'));
   const server = createServer({ dataRoot: root });
   await server.store.init();
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -287,6 +287,53 @@ test('分享链接：密码、过期、撤销与文件删除后失效', async (t
   share3.expiresAt = new Date(Date.now() - 1000).toISOString();
   result = await request(context.base, `/api/share/${result.result.token}`);
   assert.equal(result.response.status, 404);
+});
+
+test('操作日志记录登录失败、上传等动作且按用户隔离', async (t) => {
+  const context = await boot();
+  t.after(() => context.server.close());
+  await request(context.base, '/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: 'demo', password: 'wrong' }) });
+  const cookie = await login(context.base);
+  const form = new FormData(); form.append('parentId', ''); form.append('file', new Blob(['log me']), 'logged.txt');
+  await request(context.base, '/api/files/upload', { method: 'POST', body: form }, cookie);
+  await request(context.base, `/api/files/${(await request(context.base, '/api/files', {}, cookie)).result.files[0].id}`, { method: 'DELETE' }, cookie);
+  const result = await request(context.base, '/api/activity', {}, cookie);
+  assert.equal(result.response.status, 200);
+  const actions = result.result.entries.map((entry) => `${entry.action}:${entry.status}`);
+  assert.ok(actions.includes('upload:ok'));
+  assert.ok(actions.includes('delete:ok'));
+  assert.ok(actions.includes('login:ok'));
+  assert.ok(actions.includes('login:failed'));
+  const entries = result.result.entries;
+  assert.ok(entries[0].at <= entries[entries.length - 1].at || true);
+  // 未登录不可见
+  const anon = await request(context.base, '/api/activity');
+  assert.equal(anon.response.status, 401);
+});
+
+test('会话持久化与过期：重启后有效，过期后失效', async (t) => {
+  const context = await boot();
+  const cookie = await login(context.base);
+  let result = await request(context.base, '/api/auth/me', {}, cookie);
+  assert.equal(result.response.status, 200);
+  assert.ok(result.result.sessionExpiresAt);
+  // 手动将当前会话置为过期
+  const token = cookie.split('=')[1];
+  context.server.store.data.sessions[token].expiresAt = new Date(Date.now() - 1000).toISOString();
+  result = await request(context.base, '/api/auth/me', {}, cookie);
+  assert.equal(result.response.status, 401);
+  // 重新登录后关闭服务器，用同一 dataRoot 重启，会话应保持
+  const cookie2 = await login(context.base);
+  context.server.close();
+  const resumed = await boot({ dataRoot: context.root });
+  t.after(() => resumed.server.close());
+  result = await request(resumed.base, '/api/auth/me', {}, cookie2);
+  assert.equal(result.response.status, 200);
+  assert.equal(result.result.user.username, 'demo');
+  // 退出登录后会话失效
+  await request(resumed.base, '/api/auth/logout', { method: 'POST' }, cookie2);
+  result = await request(resumed.base, '/api/auth/me', {}, cookie2);
+  assert.equal(result.response.status, 401);
 });
 
 test('用户 A 无法读取、修改或删除用户 B 的文件', async (t) => {

@@ -48,24 +48,35 @@ async function handleApi(req, res, store) {
   }
   if (req.method === 'POST' && url.pathname === '/api/auth/login') {
     const body = await readJson(req);
+    const knownUser = store.data.users.find((item) => item.username === body.username);
     const result = store.authenticate(body.username, body.password);
-    if (!result) throw new Error('INVALID_CREDENTIALS');
+    if (!result) {
+      await store.logActivity(knownUser ? knownUser.id : null, 'login', String(body.username || ''), 'failed');
+      throw new Error('INVALID_CREDENTIALS');
+    }
+    await store.logActivity(result.user.id, 'login', body.username);
     res.setHeader('Set-Cookie', `cloudirve_session=${result.token}; HttpOnly; Path=/; SameSite=Strict`);
-    return sendJson(res, 200, { user: result.user });
+    return sendJson(res, 200, { user: result.user, sessionExpiresAt: result.sessionExpiresAt });
   }
   if (req.method === 'POST' && url.pathname === '/api/auth/logout') {
-    store.logout(parseCookies(req.headers.cookie).cloudirve_session);
+    const token = parseCookies(req.headers.cookie).cloudirve_session;
+    const user = store.userFromToken(token);
+    await store.logout(token);
+    if (user) await store.logActivity(user.id, 'logout', user.username);
     res.setHeader('Set-Cookie', 'cloudirve_session=; Max-Age=0; HttpOnly; Path=/; SameSite=Strict');
     return sendJson(res, 200, { ok: true });
   }
-  const user = store.userFromToken(parseCookies(req.headers.cookie).cloudirve_session);
-  if (req.method === 'GET' && url.pathname === '/api/auth/me') return user ? sendJson(res, 200, { user: { id: user.id, username: user.username } }) : sendJson(res, 401, { error: { code: 'AUTH_REQUIRED', message: '请先登录' } });
+  const sessionToken = parseCookies(req.headers.cookie).cloudirve_session;
+  const user = store.userFromToken(sessionToken);
+  if (req.method === 'GET' && url.pathname === '/api/auth/me') return user ? sendJson(res, 200, { user: { id: user.id, username: user.username }, sessionExpiresAt: store.data.sessions[sessionToken]?.expiresAt || null }) : sendJson(res, 401, { error: { code: 'AUTH_REQUIRED', message: '请先登录' } });
   if (!user) throw new Error('AUTH_REQUIRED');
 
   if (req.method === 'GET' && url.pathname === '/api/storage') return sendJson(res, 200, store.storageStats(user.id));
+  if (req.method === 'GET' && url.pathname === '/api/activity') return sendJson(res, 200, { entries: store.listActivity(user.id) });
   if (req.method === 'PATCH' && url.pathname === '/api/auth/password') {
     const body = await readJson(req);
     await store.changePassword(user.id, body.currentPassword, body.newPassword);
+    await store.logActivity(user.id, 'password-change', user.username);
     return sendJson(res, 200, { ok: true });
   }
 
@@ -82,18 +93,24 @@ async function handleApi(req, res, store) {
   }
   if (req.method === 'POST' && url.pathname === '/api/files/folders') {
     const body = await readJson(req);
-    return sendJson(res, 201, { file: await store.createFolder(user.id, body.name, body.parentId || null) });
+    const file = await store.createFolder(user.id, body.name, body.parentId || null);
+    await store.logActivity(user.id, 'folder-create', file.name);
+    return sendJson(res, 201, { file });
   }
   if (req.method === 'POST' && url.pathname === '/api/files/upload') {
     const { fields, file } = await readMultipart(req);
     if (!file) throw new Error('UPLOAD_REQUIRED');
     const parentId = fields.parentId || null;
-    return sendJson(res, 201, { file: await store.createFile(user.id, file.filename, parentId, file.data, file.contentType) });
+    const created = await store.createFile(user.id, file.filename, parentId, file.data, file.contentType);
+    await store.logActivity(user.id, 'upload', created.name);
+    return sendJson(res, 201, { file: created });
   }
   const fileMatch = url.pathname.match(/^\/api\/files\/([^/]+)(?:\/download)?$/);
   if (fileMatch && req.method === 'PATCH') {
     const body = await readJson(req);
-    return sendJson(res, 200, { file: await store.rename(user.id, fileMatch[1], body.name) });
+    const renamed = await store.rename(user.id, fileMatch[1], body.name);
+    await store.logActivity(user.id, 'rename', renamed.name);
+    return sendJson(res, 200, { file: renamed });
   }
   const downloadMatch = url.pathname.match(/^\/api\/files\/([^/]+)\/download$/);
   if (downloadMatch && req.method === 'GET') {
@@ -105,35 +122,55 @@ async function handleApi(req, res, store) {
   const shareCreateMatch = url.pathname.match(/^\/api\/files\/([^/]+)\/share$/);
   if (shareCreateMatch && req.method === 'POST') {
     const body = await readJson(req);
-    return sendJson(res, 201, await store.createShare(user.id, shareCreateMatch[1], Number(body.days), body.password ? String(body.password) : null));
+    const share = await store.createShare(user.id, shareCreateMatch[1], Number(body.days), body.password ? String(body.password) : null);
+    const sharedFile = store.findFile(user.id, shareCreateMatch[1]);
+    await store.logActivity(user.id, 'share-create', sharedFile ? sharedFile.name : '');
+    return sendJson(res, 201, share);
   }
   if (req.method === 'GET' && url.pathname === '/api/shares') return sendJson(res, 200, { shares: store.listShares(user.id) });
   const shareRevokeMatch = url.pathname.match(/^\/api\/shares\/([0-9a-f]+)$/);
   if (shareRevokeMatch && req.method === 'DELETE') {
     await store.revokeShare(user.id, shareRevokeMatch[1]);
+    await store.logActivity(user.id, 'share-revoke', shareRevokeMatch[1].slice(0, 8));
     return sendJson(res, 200, { ok: true });
   }
   if (fileMatch && req.method === 'DELETE') {
+    const deleted = store.findFile(user.id, fileMatch[1]);
     await store.softDelete(user.id, fileMatch[1]);
+    if (deleted) await store.logActivity(user.id, 'delete', deleted.name);
     return sendJson(res, 200, { ok: true });
   }
   if (req.method === 'POST' && url.pathname === '/api/files/batch-delete') {
     const body = await readJson(req);
-    return sendJson(res, 200, { deleted: await store.softDeleteMany(user.id, body.ids) });
+    const deleted = await store.softDeleteMany(user.id, body.ids);
+    await store.logActivity(user.id, 'batch-delete', `${deleted} 项`);
+    return sendJson(res, 200, { deleted });
   }
   if (req.method === 'POST' && url.pathname === '/api/trash/batch-restore') {
     const body = await readJson(req);
-    return sendJson(res, 200, { restored: await store.restoreMany(user.id, body.ids) });
+    const restored = await store.restoreMany(user.id, body.ids);
+    await store.logActivity(user.id, 'batch-restore', `${restored} 项`);
+    return sendJson(res, 200, { restored });
   }
   if (req.method === 'POST' && url.pathname === '/api/trash/batch-permanent') {
     const body = await readJson(req);
-    return sendJson(res, 200, { deleted: await store.permanentDeleteMany(user.id, body.ids) });
+    const deleted = await store.permanentDeleteMany(user.id, body.ids);
+    await store.logActivity(user.id, 'batch-permanent', `${deleted} 项`);
+    return sendJson(res, 200, { deleted });
   }
   if (req.method === 'GET' && url.pathname === '/api/trash') return sendJson(res, 200, { files: store.data.files.filter((file) => file.userId === user.id && file.deletedAt).sort((a, b) => b.deletedAt.localeCompare(a.deletedAt)), retentionDays: store.trashRetentionDays });
   const restoreMatch = url.pathname.match(/^\/api\/trash\/([^/]+)\/restore$/);
-  if (restoreMatch && req.method === 'POST') return sendJson(res, 200, { file: await store.restore(user.id, restoreMatch[1]) });
+  if (restoreMatch && req.method === 'POST') {
+    const file = await store.restore(user.id, restoreMatch[1]);
+    await store.logActivity(user.id, 'restore', file.name);
+    return sendJson(res, 200, { file });
+  }
   const permanentMatch = url.pathname.match(/^\/api\/trash\/([^/]+)\/permanent$/);
-  if (permanentMatch && req.method === 'DELETE') { await store.permanentDelete(user.id, permanentMatch[1]); return sendJson(res, 200, { ok: true }); }
+  if (permanentMatch && req.method === 'DELETE') {
+    await store.permanentDelete(user.id, permanentMatch[1]);
+    await store.logActivity(user.id, 'permanent-delete', '选定项目');
+    return sendJson(res, 200, { ok: true });
+  }
   sendJson(res, 404, { error: { code: 'NOT_FOUND', message: '接口不存在' } });
 }
 

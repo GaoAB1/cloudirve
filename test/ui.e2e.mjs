@@ -303,6 +303,9 @@ const main = async () => {
   check('设置页可达', await evalInPage("document.body.textContent.includes('账户信息')"));
   await waitFor("document.querySelector('#settings-storage-text').textContent.includes('个文件')", 'storage stats');
   check('设置页存储用量已渲染', true);
+  await waitFor("document.querySelector('#activity-list').textContent.includes('登录')", 'activity log rendered');
+  check('操作日志已渲染', true);
+  check('显示登录有效期', await evalInPage("document.body.textContent.includes('登录有效期至')"));
   await evalInPage("document.querySelector('#current-password').value='cloudirve'; document.querySelector('#new-password').value='cloudirve2'; document.querySelector('#confirm-password').value='cloudirve2'; document.querySelector('#password-form button[type=submit]').click()");
   await waitFor("[...document.querySelectorAll('.toast')].some((el) => el.textContent.includes('密码已更新'))", 'password toast');
   check('修改密码成功反馈', true);

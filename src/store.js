@@ -27,10 +27,11 @@ export class Store {
     this.dataDir = path.join(rootDir, 'data');
     this.filesDir = path.join(this.dataDir, 'files');
     this.metaPath = path.join(this.dataDir, 'metadata.json');
-    this.sessions = new Map();
     this.data = { users: [], files: [] };
     this.quotaBytes = Number(process.env.STORAGE_QUOTA_BYTES || 1024 * 1024 * 1024);
     this.trashRetentionDays = Number(process.env.TRASH_RETENTION_DAYS || 30);
+    this.sessionTtlDays = Number(process.env.SESSION_TTL_DAYS || 30);
+    this.activityLogLimit = Number(process.env.ACTIVITY_LOG_LIMIT || 500);
   }
 
   async init() {
@@ -47,6 +48,8 @@ export class Store {
       await this.persist();
     }
     if (!Array.isArray(this.data.shares)) this.data.shares = [];
+    if (!this.data.sessions || typeof this.data.sessions !== 'object') this.data.sessions = {};
+    if (!Array.isArray(this.data.activityLog)) this.data.activityLog = [];
     let migrated = false;
     for (const user of this.data.users) {
       if (user.password && !user.passwordHash) {
@@ -57,9 +60,11 @@ export class Store {
     }
     if (migrated) await this.persist();
     await this.purgeExpiredTrash();
+    if (this.purgeExpiredSessions()) await this.persist();
   }
 
   async purgeExpiredTrash() {
+    this.purgeExpiredSessions();
     const cutoff = Date.now() - this.trashRetentionDays * 24 * 60 * 60 * 1000;
     const expired = this.data.files.filter((file) => file.deletedAt && new Date(file.deletedAt).getTime() <= cutoff);
     if (!expired.length) return 0;
@@ -87,17 +92,45 @@ export class Store {
     const user = this.data.users.find((item) => item.username === username && verifyPassword(password, item.passwordHash));
     if (!user) return null;
     const token = crypto.randomBytes(24).toString('hex');
-    this.sessions.set(token, user.id);
-    return { token, user: { id: user.id, username: user.username } };
+    this.data.sessions[token] = { userId: user.id, expiresAt: new Date(Date.now() + this.sessionTtlDays * 24 * 60 * 60 * 1000).toISOString() };
+    return { token, user: { id: user.id, username: user.username }, sessionExpiresAt: this.data.sessions[token].expiresAt };
   }
 
   userFromToken(token) {
-    const userId = token ? this.sessions.get(token) : null;
-    return this.data.users.find((user) => user.id === userId) || null;
+    const session = token ? this.data.sessions[token] : null;
+    if (!session) return null;
+    if (new Date(session.expiresAt).getTime() <= Date.now()) {
+      delete this.data.sessions[token];
+      return null;
+    }
+    return this.data.users.find((user) => user.id === session.userId) || null;
   }
 
   logout(token) {
-    this.sessions.delete(token);
+    delete this.data.sessions[token];
+    return this.persist();
+  }
+
+  logActivity(userId, action, detail = '', status = 'ok') {
+    this.data.activityLog.unshift({ id: crypto.randomUUID(), userId, action, detail: String(detail).slice(0, 200), status, at: new Date().toISOString() });
+    if (this.data.activityLog.length > this.activityLogLimit) this.data.activityLog.length = this.activityLogLimit;
+    return this.persist();
+  }
+
+  listActivity(userId) {
+    return this.data.activityLog.filter((entry) => entry.userId === userId).slice(0, 100);
+  }
+
+  purgeExpiredSessions() {
+    const now = Date.now();
+    let removed = 0;
+    for (const [token, session] of Object.entries(this.data.sessions)) {
+      if (new Date(session.expiresAt).getTime() <= now) {
+        delete this.data.sessions[token];
+        removed += 1;
+      }
+    }
+    return removed;
   }
 
   storageStats(userId) {
