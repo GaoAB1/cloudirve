@@ -325,6 +325,30 @@ const main = async () => {
   await evalInPage("document.querySelector('#confirm-action').click()");
   await waitFor("document.querySelector('#shares-list').textContent.includes('已撤销')", 'share revoked label');
   check('分享撤销生效', true);
+
+  // 用户管理：创建 → 禁用/启用 → 删除（按钮定位到 family 行内，避免命中 admin 自己的按钮）
+  await waitFor("document.querySelector('#user-create-form')", 'user admin card');
+  check('管理员可见用户管理', true);
+  const rowButton = (action) => "[...document.querySelectorAll('.share-row')].find((row) => row.querySelector('.share-info strong')?.textContent.startsWith('family'))?.querySelector('[data-action=" + action + "]')";
+  await evalInPage("document.querySelector('#new-username').value='family'; document.querySelector('#new-password').value='family-pass'; document.querySelector('#user-create-form').dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))");
+  await waitFor("[...document.querySelectorAll('#users-list strong')].some((el) => el.textContent.startsWith('family'))", 'user family row');
+  check('创建用户出现在列表', true);
+  await evalInPage(`${rowButton('user-disable')}.click()`);
+  await waitFor("document.querySelector('#confirm-dialog').open", 'user disable confirm');
+  await evalInPage("document.querySelector('#confirm-action').click()");
+  await waitFor("[...document.querySelectorAll('.share-row')].some((row) => row.querySelector('.share-info strong')?.textContent.startsWith('family') && row.querySelector('.status-badge')?.textContent === '已禁用')", 'user disabled badge');
+  check('禁用用户生效', true);
+  await evalInPage(`${rowButton('user-enable')}.click()`);
+  await waitFor("document.querySelector('#confirm-dialog').open", 'user enable confirm');
+  await evalInPage("document.querySelector('#confirm-action').click()");
+  await waitFor("[...document.querySelectorAll('.share-row')].some((row) => row.querySelector('.share-info strong')?.textContent.startsWith('family') && row.querySelector('.status-badge')?.textContent === '正常')", 'user enabled badge');
+  check('启用用户生效', true);
+  await evalInPage(`${rowButton('user-delete')}.click()`);
+  await waitFor("document.querySelector('#confirm-dialog').open", 'user delete confirm');
+  await evalInPage("document.querySelector('#confirm-action').click()");
+  await waitFor("![...document.querySelectorAll('#users-list strong')].some((el) => el.textContent.startsWith('family'))", 'user family removed');
+  check('删除用户生效', true);
+
   const revokedStatus = await evalInPage(`fetch('/api/share/${shareToken}', { credentials: 'omit' }).then((r) => r.status)`);
   check('撤销后匿名访问失效', revokedStatus === 404);
   await evalInPage(`location.href = '/share/${shareToken}'`);

@@ -17,7 +17,7 @@ export function createServer({ dataRoot = path.join(__dirname, '..') } = {}) {
       if (req.url.startsWith('/api/')) await handleApi(req, res, store);
       else await serveStatic(req, res);
     } catch (error) {
-      const known = { AUTH_REQUIRED: [401, '请先登录'], INVALID_CREDENTIALS: [401, '用户名或密码错误'], INVALID_JSON: [400, '请求格式错误'], INVALID_NAME: [400, '名称不合法'], INVALID_PASSWORD: [400, '新密码需为 6-128 位'], INVALID_DAYS: [400, '有效期需为 1-365 天'], DUPLICATE_NAME: [409, '当前目录已存在同名项目'], PARENT_NOT_FOUND: [404, '目标目录不存在'], FILE_NOT_FOUND: [404, '文件不存在或已被删除'], FILE_TOO_LARGE: [413, '文件超过 25 MB 限制'], QUOTA_EXCEEDED: [413, '存储空间不足，请清理后再试'], UPLOAD_REQUIRED: [400, '请选择要上传的文件'], SHARE_NOT_FOUND: [404, '分享不存在或已失效'], SHARE_PASSWORD_REQUIRED: [401, '此分享需要密码'], SHARE_PASSWORD_INVALID: [401, '分享密码错误'] }[error.message];
+      const known = { AUTH_REQUIRED: [401, '请先登录'], AUTH_DISABLED: [403, '账号已被禁用'], FORBIDDEN: [403, '无权限执行此操作'], LAST_ADMIN: [403, '至少需要保留一个可用的管理员'], INVALID_CREDENTIALS: [401, '用户名或密码错误'], INVALID_JSON: [400, '请求格式错误'], INVALID_NAME: [400, '名称不合法'], INVALID_USERNAME: [400, '用户名需为 1-32 位且不含空格'], INVALID_PASSWORD: [400, '密码需为 6-128 位'], INVALID_DAYS: [400, '有效期需为 1-365 天'], DUPLICATE_NAME: [409, '当前目录已存在同名项目'], PARENT_NOT_FOUND: [404, '目标目录不存在'], FILE_NOT_FOUND: [404, '文件不存在或已被删除'], FILE_TOO_LARGE: [413, '文件超过 25 MB 限制'], QUOTA_EXCEEDED: [413, '存储空间不足，请清理后再试'], UPLOAD_REQUIRED: [400, '请选择要上传的文件'], SHARE_NOT_FOUND: [404, '分享不存在或已失效'], SHARE_PASSWORD_REQUIRED: [401, '此分享需要密码'], SHARE_PASSWORD_INVALID: [401, '分享密码错误'] }[error.message];
       if (known) return sendJson(res, known[0], { error: { code: error.message, message: known[1] } });
       console.error(error);
       sendJson(res, 500, { error: { code: 'INTERNAL_ERROR', message: '服务暂时不可用，请稍后重试' } });
@@ -54,6 +54,11 @@ async function handleApi(req, res, store) {
       await store.logActivity(knownUser ? knownUser.id : null, 'login', String(body.username || ''), 'failed');
       throw new Error('INVALID_CREDENTIALS');
     }
+    if (store.data.users.find((item) => item.id === result.user.id)?.disabled) {
+      delete store.data.sessions[result.token];
+      await store.logActivity(result.user.id, 'login', body.username, 'failed');
+      throw new Error('AUTH_DISABLED');
+    }
     await store.logActivity(result.user.id, 'login', body.username);
     res.setHeader('Set-Cookie', `cloudirve_session=${result.token}; HttpOnly; Path=/; SameSite=Strict`);
     return sendJson(res, 200, { user: result.user, sessionExpiresAt: result.sessionExpiresAt });
@@ -68,8 +73,33 @@ async function handleApi(req, res, store) {
   }
   const sessionToken = parseCookies(req.headers.cookie).cloudirve_session;
   const user = store.userFromToken(sessionToken);
-  if (req.method === 'GET' && url.pathname === '/api/auth/me') return user ? sendJson(res, 200, { user: { id: user.id, username: user.username }, sessionExpiresAt: store.data.sessions[sessionToken]?.expiresAt || null }) : sendJson(res, 401, { error: { code: 'AUTH_REQUIRED', message: '请先登录' } });
+  if (req.method === 'GET' && url.pathname === '/api/auth/me') return user ? sendJson(res, 200, { user: { id: user.id, username: user.username, role: user.role }, sessionExpiresAt: store.data.sessions[sessionToken]?.expiresAt || null }) : sendJson(res, 401, { error: { code: 'AUTH_REQUIRED', message: '请先登录' } });
   if (!user) throw new Error('AUTH_REQUIRED');
+
+  if (url.pathname.startsWith('/api/admin/') && user.role !== 'admin') throw new Error('FORBIDDEN');
+  if (req.method === 'GET' && url.pathname === '/api/admin/users') return sendJson(res, 200, { users: store.listUsers() });
+  if (req.method === 'POST' && url.pathname === '/api/admin/users') {
+    const body = await readJson(req);
+    const created = store.createUser(body.username, body.password);
+    await store.persist();
+    await store.logActivity(user.id, 'user-create', created.username);
+    return sendJson(res, 201, { user: created });
+  }
+  const adminUserMatch = url.pathname.match(/^\/api\/admin\/users\/([^/]+)$/);
+  if (adminUserMatch && req.method === 'PATCH') {
+    const body = await readJson(req);
+    const updated = store.updateUser(adminUserMatch[1], { disabled: body.disabled, role: body.role, password: body.password }, user.id);
+    await store.persist();
+    if (body.password !== undefined) await store.logActivity(user.id, 'password-reset', updated.username);
+    else if (typeof body.disabled === 'boolean') await store.logActivity(user.id, body.disabled ? 'user-disable' : 'user-enable', updated.username);
+    else if (body.role) await store.logActivity(user.id, 'user-role', `${updated.username} → ${updated.role}`);
+    return sendJson(res, 200, { user: updated });
+  }
+  if (adminUserMatch && req.method === 'DELETE') {
+    const username = await store.deleteUser(adminUserMatch[1], user.id);
+    await store.logActivity(user.id, 'user-delete', username);
+    return sendJson(res, 200, { ok: true });
+  }
 
   if (req.method === 'GET' && url.pathname === '/api/storage') return sendJson(res, 200, store.storageStats(user.id));
   if (req.method === 'GET' && url.pathname === '/api/activity') return sendJson(res, 200, { entries: store.listActivity(user.id) });

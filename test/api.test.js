@@ -336,6 +336,78 @@ test('会话持久化与过期：重启后有效，过期后失效', async (t) =
   assert.equal(result.response.status, 401);
 });
 
+test('管理员用户管理：创建、重置密码、禁用、删除与保护规则', async (t) => {
+  const context = await boot();
+  t.after(() => context.server.close());
+  const cookieA = await login(context.base);
+  // demo 是首用户 → 自动成为管理员
+  let result = await request(context.base, '/api/auth/me', {}, cookieA);
+  assert.equal(result.result.user.role, 'admin');
+  // 非 admin 一律 403
+  context.server.store.data.users.push({ id: 'user-x', username: 'xray', passwordHash: 'scrypt$x$y', role: 'member', disabled: false, createdAt: new Date().toISOString() });
+  const loginX = await request(context.base, '/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: 'xray', password: 'whatever' }) });
+  assert.equal(loginX.response.status, 401);
+  // 创建成员用户
+  result = await request(context.base, '/api/admin/users', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: 'bee', password: 'bee-pass-123' }) }, cookieA);
+  assert.equal(result.response.status, 201);
+  const beeId = result.result.user.id;
+  result = await request(context.base, '/api/admin/users', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: 'bee', password: 'bee-pass-123' }) }, cookieA);
+  assert.equal(result.response.status, 409);
+  result = await request(context.base, '/api/admin/users', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: 'bad name', password: 'bee-pass-123' }) }, cookieA);
+  assert.equal(result.response.status, 400);
+  // bee 上传文件、创建分享，并以 member 身份访问管理端点 → 403
+  const loginBee = await request(context.base, '/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: 'bee', password: 'bee-pass-123' }) });
+  const cookieBee = loginBee.cookie;
+  result = await request(context.base, '/api/admin/users', {}, cookieBee);
+  assert.equal(result.response.status, 403);
+  const form = new FormData(); form.append('parentId', ''); form.append('file', new Blob(['bee data']), 'bee.txt');
+  result = await request(context.base, '/api/files/upload', { method: 'POST', body: form }, cookieBee);
+  const beeFileId = result.result.file.id;
+  result = await request(context.base, `/api/files/${beeFileId}/share`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ days: 7 }) }, cookieBee);
+  const beeShareToken = result.result.token;
+  // admin 列表可见 bee 及其用量
+  result = await request(context.base, '/api/admin/users', {}, cookieA);
+  const beeRow = result.result.users.find((user) => user.id === beeId);
+  assert.equal(beeRow.fileCount, 1);
+  assert.equal(beeRow.role, 'member');
+  // 重置密码：旧密码失效、新密码可登录（重置会同时吊销 bee 的会话）
+  result = await request(context.base, `/api/admin/users/${beeId}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password: 'new-bee-pass' }) }, cookieA);
+  assert.equal(result.response.status, 200);
+  result = await request(context.base, '/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: 'bee', password: 'bee-pass-123' }) });
+  assert.equal(result.response.status, 401);
+  result = await request(context.base, '/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: 'bee', password: 'new-bee-pass' }) });
+  assert.equal(result.response.status, 200);
+  // 禁用后：登录 403、已有会话立即失效
+  result = await request(context.base, `/api/admin/users/${beeId}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ disabled: true }) }, cookieA);
+  assert.equal(result.response.status, 200);
+  result = await request(context.base, '/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: 'bee', password: 'new-bee-pass' }) });
+  assert.equal(result.response.status, 403);
+  result = await request(context.base, '/api/files', {}, loginBee.cookie);
+  assert.equal(result.response.status, 401);
+  // 启用后：重新登录恢复正常
+  result = await request(context.base, `/api/admin/users/${beeId}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ disabled: false }) }, cookieA);
+  assert.equal(result.response.status, 200);
+  const loginBee2 = await request(context.base, '/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: 'bee', password: 'new-bee-pass' }) });
+  assert.equal(loginBee2.response.status, 200);
+  result = await request(context.base, '/api/files', {}, loginBee2.cookie);
+  assert.equal(result.response.status, 200);
+  // 删除 bee：文件物理删除、分享失效
+  const beeFilePath = path.join(context.root, 'data', 'files', beeId, beeFileId);
+  result = await request(context.base, `/api/admin/users/${beeId}`, { method: 'DELETE' }, cookieA);
+  assert.equal(result.response.status, 200);
+  await assert.rejects(fs.access(beeFilePath));
+  result = await request(context.base, `/api/share/${beeShareToken}`);
+  assert.equal(result.response.status, 404);
+  result = await request(context.base, '/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: 'bee', password: 'new-bee-pass' }) });
+  assert.equal(result.response.status, 401);
+  // 保护规则：不能禁用/删除自己，不能删最后一个管理员
+  const meId = context.server.store.data.users.find((user) => user.username === 'demo').id;
+  result = await request(context.base, `/api/admin/users/${meId}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ disabled: true }) }, cookieA);
+  assert.equal(result.response.status, 403);
+  result = await request(context.base, `/api/admin/users/${meId}`, { method: 'DELETE' }, cookieA);
+  assert.equal(result.response.status, 403);
+});
+
 test('用户 A 无法读取、修改或删除用户 B 的文件', async (t) => {
   const context = await boot();
   t.after(() => context.server.close());

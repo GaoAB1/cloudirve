@@ -50,6 +50,12 @@ export class Store {
     if (!Array.isArray(this.data.shares)) this.data.shares = [];
     if (!this.data.sessions || typeof this.data.sessions !== 'object') this.data.sessions = {};
     if (!Array.isArray(this.data.activityLog)) this.data.activityLog = [];
+    if (!this.data.users.some((user) => user.role === 'admin')) this.data.users[0].role = 'admin';
+    for (const user of this.data.users) {
+      if (!user.role) user.role = 'member';
+      if (user.disabled === undefined) user.disabled = false;
+      if (!user.createdAt) user.createdAt = new Date().toISOString();
+    }
     let migrated = false;
     for (const user of this.data.users) {
       if (user.password && !user.passwordHash) {
@@ -93,7 +99,7 @@ export class Store {
     if (!user) return null;
     const token = crypto.randomBytes(24).toString('hex');
     this.data.sessions[token] = { userId: user.id, expiresAt: new Date(Date.now() + this.sessionTtlDays * 24 * 60 * 60 * 1000).toISOString() };
-    return { token, user: { id: user.id, username: user.username }, sessionExpiresAt: this.data.sessions[token].expiresAt };
+    return { token, user: { id: user.id, username: user.username, role: user.role }, sessionExpiresAt: this.data.sessions[token].expiresAt };
   }
 
   userFromToken(token) {
@@ -103,7 +109,9 @@ export class Store {
       delete this.data.sessions[token];
       return null;
     }
-    return this.data.users.find((user) => user.id === session.userId) || null;
+    const user = this.data.users.find((item) => item.id === session.userId) || null;
+    if (user && user.disabled) return null;
+    return user;
   }
 
   logout(token) {
@@ -119,6 +127,67 @@ export class Store {
 
   listActivity(userId) {
     return this.data.activityLog.filter((entry) => entry.userId === userId).slice(0, 100);
+  }
+
+  validateUsername(username) {
+    if (typeof username !== 'string' || !username.trim() || username.length > 32 || /\s/.test(username)) throw new Error('INVALID_USERNAME');
+  }
+
+  createUser(username, password) {
+    this.validateUsername(username);
+    if (typeof password !== 'string' || password.length < 6 || password.length > 128) throw new Error('INVALID_PASSWORD');
+    if (this.data.users.some((item) => item.username === username)) throw new Error('DUPLICATE_NAME');
+    const user = { id: crypto.randomUUID(), username, passwordHash: hashPassword(password), role: 'member', disabled: false, createdAt: new Date().toISOString() };
+    this.data.users.push(user);
+    return { id: user.id, username: user.username, role: user.role, disabled: user.disabled, createdAt: user.createdAt };
+  }
+
+  adminCount() {
+    return this.data.users.filter((user) => user.role === 'admin' && !user.disabled).length;
+  }
+
+  updateUser(userId, patch = {}, actorId = null) {
+    const user = this.data.users.find((item) => item.id === userId);
+    if (!user) throw new Error('FILE_NOT_FOUND');
+    if (typeof patch.disabled === 'boolean' || patch.role) {
+      if (actorId === userId) throw new Error('FORBIDDEN');
+      if ((patch.disabled === true || patch.role === 'member') && user.role === 'admin' && this.adminCount() <= 1) throw new Error('LAST_ADMIN');
+    }
+    if (typeof patch.disabled === 'boolean') user.disabled = patch.disabled;
+    if (patch.role === 'admin' || patch.role === 'member') user.role = patch.role;
+    if (patch.password !== undefined) {
+      if (typeof patch.password !== 'string' || patch.password.length < 6 || patch.password.length > 128) throw new Error('INVALID_PASSWORD');
+      user.passwordHash = hashPassword(patch.password);
+      for (const [token, session] of Object.entries(this.data.sessions)) {
+        if (session.userId === userId) delete this.data.sessions[token];
+      }
+    }
+    return { id: user.id, username: user.username, role: user.role, disabled: user.disabled, createdAt: user.createdAt };
+  }
+
+  async deleteUser(userId, actorId = null) {
+    if (userId === actorId) throw new Error('FORBIDDEN');
+    const user = this.data.users.find((item) => item.id === userId);
+    if (!user) throw new Error('FILE_NOT_FOUND');
+    if (user.role === 'admin' && this.adminCount() <= 1) throw new Error('LAST_ADMIN');
+    for (const item of this.data.files.filter((file) => file.userId === userId && !file.isDirectory)) {
+      await fs.rm(this.pathFor(item), { force: true });
+    }
+    this.data.files = this.data.files.filter((file) => file.userId !== userId);
+    this.data.shares = this.data.shares.filter((share) => share.userId !== userId);
+    this.data.users = this.data.users.filter((item) => item.id !== userId);
+    for (const [token, session] of Object.entries(this.data.sessions)) {
+      if (session.userId === userId) delete this.data.sessions[token];
+    }
+    await this.persist();
+    return user.username;
+  }
+
+  listUsers() {
+    return this.data.users.map((user) => {
+      const stats = this.storageStats(user.id);
+      return { id: user.id, username: user.username, role: user.role, disabled: !!user.disabled, createdAt: user.createdAt, usedBytes: stats.usedBytes, fileCount: stats.fileCount };
+    }).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
   }
 
   purgeExpiredSessions() {
