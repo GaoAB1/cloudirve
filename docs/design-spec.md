@@ -6,6 +6,8 @@
 
 设计系统源文件：`design-system/cloudirve-drive-mvp/MASTER.md`
 
+> **后续迭代**：MVP 完成后的功能迭代规划（操作日志、多用户、TOTP、OnlyOffice、PWA）见 `docs/iteration-plan.md`，该文档与本文档共同构成当前设计基线。
+
 ## 2. 产品定义
 
 ### 2.1 产品定位
