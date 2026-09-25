@@ -284,6 +284,7 @@ const main = async () => {
   await evalInPage("document.querySelector('[data-action=batch-delete]').click()");
   await waitFor("document.querySelector('#confirm-dialog').open", 'batch delete confirm again');
   await evalInPage("document.querySelector('#confirm-action').click()");
+  await waitFor("document.querySelector('.empty-state')", 'drive empty after second batch delete');
   await waitFor("document.querySelector('[data-action=trash]')", 'trash nav again');
   await evalInPage("document.querySelector('[data-action=trash]').click()");
   await waitFor("document.querySelector('.file-table')", 'trash table again');
