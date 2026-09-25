@@ -90,7 +90,8 @@ async function handleApi(req, res, store, office) {
     if (payload.fileId !== officeContentMatch[1]) throw new Error('OFFICE_TOKEN_INVALID');
     const file = store.findFile(payload.userId, payload.fileId);
     if (!file || file.isDirectory) throw new Error('FILE_NOT_FOUND');
-    return streamFile(res, store, file, true);
+    // DS 拉取文档是机器对机器，必须给完整内容，不能套用浏览器预览的 200KB 截断（截断会切坏 UTF-8 多字节字符导致乱码）
+    return streamFile(res, store, file, true, true);
   }
   const officeCallbackMatch = url.pathname.match(/^\/api\/office\/files\/([^/]+)\/callback$/);
   if (officeCallbackMatch && req.method === 'POST') {
@@ -103,7 +104,7 @@ async function handleApi(req, res, store, office) {
     if (!officeJwt) throw new Error('OFFICE_CALLBACK_INVALID');
     verifyOfficeToken(officeJwt, office.secret, 'office-outbox');
     if (Number(body.status) === 2 || Number(body.status) === 6) {
-      if (!body.url || !isAllowedOfficeUrl(body.url, office.url)) throw new Error('OFFICE_CALLBACK_INVALID');
+      if (!body.url || !isAllowedOfficeUrl(body.url, [office.url, office.publicUrl].filter(Boolean))) throw new Error('OFFICE_CALLBACK_INVALID');
       const fetchToken = signOfficeToken({ purpose: 'office-fetch', fileId: payload.fileId }, office.secret, 300);
       const response = await fetch(body.url, { headers: { Authorization: `Bearer ${fetchToken}` } });
       if (!response.ok || !response.body) throw new Error('OFFICE_DOWNLOAD_FAILED');
@@ -135,7 +136,7 @@ async function handleApi(req, res, store, office) {
     const config = {
       document: { fileType: type.extension, key: `${file.id}-${new Date(file.updatedAt).getTime()}`, title: file.name, url: `${office.callbackOrigin || originFor(req)}/api/office/files/${file.id}/content?token=${encodeURIComponent(fileToken)}`, permissions: { edit: true, download: true, print: true, copy: true } },
       documentType: type.documentType,
-      editorConfig: { callbackUrl: `${office.callbackOrigin || originFor(req)}/api/office/files/${file.id}/callback?token=${encodeURIComponent(callbackToken)}`, mode: 'edit', lang: 'zh-CN', user: { id: user.id, name: user.username } },
+      editorConfig: { callbackUrl: `${office.callbackOrigin || originFor(req)}/api/office/files/${file.id}/callback?token=${encodeURIComponent(callbackToken)}`, mode: 'edit', lang: 'zh-CN', user: { id: user.id, name: user.username }, customization: { autosave: true, forcesave: true } },
       height: '100%',
       type: 'desktop',
       width: '100%',
@@ -316,7 +317,7 @@ async function serveStatic(req, res) {
 
 function parseCookies(value = '') { return Object.fromEntries(value.split(';').map((part) => part.trim().split('=').map(decodeURIComponent)).filter(([key]) => key)); }
 function originFor(req) { const protocol = req.headers['x-forwarded-proto'] || 'http'; const host = req.headers['x-forwarded-host'] || req.headers.host || '127.0.0.1'; return `${protocol}://${host}`; }
-function isAllowedOfficeUrl(value, officeUrl) { try { const url = new URL(value); const base = new URL(officeUrl); return url.protocol === base.protocol && url.host === base.host; } catch { return false; } }
+function isAllowedOfficeUrl(value, allowedUrls) { try { const url = new URL(value); return (Array.isArray(allowedUrls) ? allowedUrls : [allowedUrls]).some((candidate) => { try { const base = new URL(candidate); return url.protocol === base.protocol && url.host === base.host; } catch { return false; } }); } catch { return false; } }
 const textExtensions = new Set(['txt', 'md', 'json', 'js', 'mjs', 'css', 'csv', 'log', 'xml', 'yml', 'yaml', 'html', 'htm', 'svg', 'sh', 'py', 'ini', 'conf']);
 function isTextFile(file) {
   const mime = (file.mimeType || '').toLowerCase();
@@ -326,12 +327,12 @@ function isTextFile(file) {
 }
 
 // 统一的文件内容响应：inline 用于预览（文本截断 200KB + CSP sandbox 防内联脚本），否则 attachment
-function streamFile(res, store, file, inline) {
+function streamFile(res, store, file, inline, noTruncate = false) {
   const headers = { 'Content-Type': file.mimeType || 'application/octet-stream', 'X-Content-Type-Options': 'nosniff' };
   if (inline) {
     headers['Content-Disposition'] = `inline; filename*=UTF-8''${encodeURIComponent(file.name)}`;
     headers['Content-Security-Policy'] = 'sandbox';
-    if (isTextFile(file)) {
+    if (isTextFile(file) && !noTruncate) {
       return fs.readFile(store.pathFor(file)).then((buffer) => {
         const content = buffer.subarray(0, 200 * 1024);
         headers['Content-Length'] = content.length;

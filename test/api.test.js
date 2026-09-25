@@ -467,21 +467,27 @@ test('OnlyOffice 集成默认关闭且启用后完成配置、签名内容访问
   await new Promise((resolve) => downloadServer.listen(0, '127.0.0.1', resolve));
   t.after(() => downloadServer.close());
   const officeDownloadUrl = `http://127.0.0.1:${downloadServer.address().port}`;
-  const enabled = await boot({ officeEnabled: true, officeUrl: officeDownloadUrl, officePublicUrl: 'http://office.local', officeSecret: 'test-office-secret' });
+  const publicServer = http.createServer((req, res) => { res.writeHead(200, { 'Content-Type': 'application/octet-stream' }); res.end('public edit'); });
+  await new Promise((resolve) => publicServer.listen(0, '127.0.0.1', resolve));
+  t.after(() => publicServer.close());
+  const officePublicDownloadUrl = `http://127.0.0.1:${publicServer.address().port}`;
+  const enabled = await boot({ officeEnabled: true, officeUrl: officeDownloadUrl, officePublicUrl: officePublicDownloadUrl, officeSecret: 'test-office-secret' });
   t.after(() => enabled.server.close());
   const enabledCookie = await login(enabled.base);
   const enabledForm = new FormData(); enabledForm.append('parentId', ''); enabledForm.append('file', new Blob(['before edit'], { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' }), 'note.docx');
   result = await request(enabled.base, '/api/files/upload', { method: 'POST', body: enabledForm }, enabledCookie);
   const enabledFileId = result.result.file.id;
   result = await request(enabled.base, '/api/office/status', {}, enabledCookie);
-  assert.deepEqual(result.result, { enabled: true, url: 'http://office.local' });
+  assert.deepEqual(result.result, { enabled: true, url: officePublicDownloadUrl });
   result = await request(enabled.base, `/api/office/files/${enabledFileId}/config`, {}, enabledCookie);
   assert.equal(result.response.status, 200);
-  assert.equal(result.result.editorUrl, 'http://office.local');
+  assert.equal(result.result.editorUrl, officePublicDownloadUrl);
   assert.equal(result.result.config.document.fileType, 'docx');
   assert.equal(result.result.config.document.permissions.edit, true);
   assert.match(result.result.config.document.key, /^[0-9a-zA-Z-.=_]+$/);
   assert.equal(result.result.config.documentType, 'text');
+  assert.equal(result.result.config.editorConfig.customization.autosave, true);
+  assert.equal(result.result.config.editorConfig.customization.forcesave, true);
   assert.match(result.result.config.token, /^[\w-]+\.[\w-]+\.[\w-]+$/);
   const contentUrl = new URL(result.result.config.document.url);
   const callbackUrl = new URL(result.result.config.editorConfig.callbackUrl);
@@ -492,16 +498,30 @@ test('OnlyOffice 集成默认关闭且启用后完成配置、签名内容访问
   tamperedUrl.searchParams.set('token', 'bad');
   content = await fetch(tamperedUrl);
   assert.equal(content.status, 401);
+  // 大文本经 DS 内容接口必须完整返回（不套用 200KB 预览截断，否则截断处切坏 UTF-8 导致乱码）
+  const bigText = '汉'.repeat(100 * 1024);
+  const bigForm = new FormData(); bigForm.append('parentId', ''); bigForm.append('file', new Blob([bigText], { type: 'text/plain' }), 'big.txt');
+  result = await request(enabled.base, '/api/files/upload', { method: 'POST', body: bigForm }, enabledCookie);
+  const bigFileId = result.result.file.id;
+  result = await request(enabled.base, `/api/office/files/${bigFileId}/config`, {}, enabledCookie);
+  content = await fetch(new URL(result.result.config.document.url));
+  assert.equal(content.status, 200);
+  assert.equal(content.headers.get('x-truncated'), null);
+  assert.equal(await content.text(), bigText);
   const callbackBody = JSON.stringify({ status: 2, url: 'http://127.0.0.1:9/edited.docx' });
   const officeToken = callbackUrl.searchParams.get('token');
   const officeJwt = (await import('../src/office.js')).signOfficeToken({ purpose: 'office-outbox' }, 'test-office-secret', 300);
   result = await request(enabled.base, callbackUrl.pathname + callbackUrl.search, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${officeJwt}` }, body: callbackBody });
   assert.equal(result.response.status, 400);
-  const downloadUrl = `${officeDownloadUrl}/edited.docx`;
-  result = await request(enabled.base, `${callbackUrl.pathname}?token=${encodeURIComponent(officeToken)}`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${officeJwt}` }, body: JSON.stringify({ status: 2, url: downloadUrl }) });
+  // DS 生成下载链接的 host 可能是内部地址，也可能是浏览器访问的公开地址，两者都必须允许保存
+  result = await request(enabled.base, `${callbackUrl.pathname}?token=${encodeURIComponent(officeToken)}`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${officeJwt}` }, body: JSON.stringify({ status: 2, url: `${officeDownloadUrl}/edited.docx` }) });
   assert.equal(result.response.status, 200);
   const saved = await fetch(`${enabled.base}/api/files/${enabledFileId}/download`, { headers: { Cookie: enabledCookie } });
   assert.equal(await saved.text(), 'after edit');
+  result = await request(enabled.base, `${callbackUrl.pathname}?token=${encodeURIComponent(officeToken)}`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${officeJwt}` }, body: JSON.stringify({ status: 6, url: `${officePublicDownloadUrl}/edited.docx` }) });
+  assert.equal(result.response.status, 200);
+  const savedPublic = await fetch(`${enabled.base}/api/files/${enabledFileId}/download`, { headers: { Cookie: enabledCookie } });
+  assert.equal(await savedPublic.text(), 'public edit');
 });
 
 test('用户 A 无法读取、修改或删除用户 B 的文件', async (t) => {
